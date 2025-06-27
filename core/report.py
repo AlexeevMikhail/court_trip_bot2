@@ -5,7 +5,7 @@ import sqlite3
 import pandas as pd
 from io import BytesIO
 
-ADMIN_IDS = [414634622]  # Замените на актуальные ID
+ADMIN_IDS = [414634622,1745732977]  # Замените на актуальные ID
 
 async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
