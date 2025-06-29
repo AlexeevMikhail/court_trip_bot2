@@ -1,0 +1,14 @@
+language = "python3"
+run = "python3 bot.py"
+
+[interpreter]
+command = "python3"
+
+[deployment]
+run = ["python3", "bot.py"]
+
+[[ports]]
+localPort = 8080
+
+
+
