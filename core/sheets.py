@@ -1,57 +1,49 @@
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import json
+import os
+from io import StringIO
 from datetime import datetime
-import pytz
-import pandas as pd
+from oauth2client.service_account import ServiceAccountCredentials
 
-# Пути и ID
+# ID таблицы и названия листов
 SPREADSHEET_ID = "10YnZvLU6g-k9a8YvC8tp5xv1sfYC-j0C71z83Add4dQ"
 SHEET_USERS = "Пользователи"
 SHEET_TRIPS = "Поездки"
 
-# Подключение
+# Подключение к Google Sheets через переменную окружения
 def get_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("court-trip-bot-10ea471d3f51.json", scope)
+    json_str = os.getenv("GOOGLE_CREDENTIALS")
+    if not json_str:
+        raise Exception("Переменная окружения GOOGLE_CREDENTIALS не найдена")
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(json_str), scope)
     return gspread.authorize(creds)
 
 # Добавление пользователя
 def add_user(user_id: int, full_name: str, username: str):
-    client = get_client()
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_USERS)
-    users = sheet.col_values(1)
-    if str(user_id) not in users:
-        sheet.append_row([str(user_id), full_name, username or ""])
+    try:
+        client = get_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_USERS)
+        users = sheet.col_values(1)
+        if str(user_id) not in users:
+            sheet.append_row([str(user_id), full_name, username or ""])
+    except Exception as e:
+        print(f"[Google Sheets] Ошибка при добавлении пользователя: {e}")
 
 # Добавление поездки
-def add_trip(user_id: int, org: str):
-    client = get_client()
-    sheet_users = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_USERS)
-    sheet_trips = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_TRIPS)
+def add_trip(full_name: str, org: str, start_time: datetime, end_time: datetime | None = None):
+    try:
+        client = get_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_TRIPS)
 
-    # Найдём ФИО по user_id
-    users = sheet_users.get_all_values()
-    full_name = None
-    for row in users[1:]:  # пропускаем заголовок
-        if str(user_id) == row[0]:
-            full_name = row[1]
-            break
-    if not full_name:
-        return  # Пользователь не найден — не добавляем
+        date_str = start_time.strftime('%d.%m.%Y')
+        start_str = start_time.strftime('%d.%m.%Y %H:%M')
+        end_str = end_time.strftime('%d.%m.%Y %H:%M') if end_time else ''
+        duration = ''
+        if end_time:
+            diff = end_time - start_time
+            duration = f"{diff.seconds // 3600:02}:{(diff.seconds % 3600) // 60:02}"
 
-    # Время в МСК
-    msk = pytz.timezone("Europe/Moscow")
-    now = datetime.now(msk)
-
-    date_str = now.strftime('%d.%m.%Y')
-    start_str = now.strftime('%d.%m.%Y %H:%M')
-
-    # Добавляем запись
-    sheet_trips.append_row([full_name, org, date_str, start_str, '', ''])
-
-# 📥 Получение таблицы поездок как DataFrame
-def get_trip_dataframe() -> pd.DataFrame:
-    client = get_client()
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_TRIPS)
-    data = sheet.get_all_records()
-    return pd.DataFrame(data)
+        sheet.append_row([full_name, org, date_str, start_str, end_str, duration])
+    except Exception as e:
+        print(f"[Google Sheets] Ошибка при добавлении поездки: {e}")
