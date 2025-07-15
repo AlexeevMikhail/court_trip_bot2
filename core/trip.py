@@ -1,11 +1,10 @@
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from utils.database import is_registered, save_trip_start, get_now
+from sheets import add_trip  # 👈 Импорт функции Google Sheets
 import sqlite3
 
-# Порядок важен — используем обычный словарь
 ORGANIZATIONS = {
-    # 1. Московские районные суды (по алфавиту русских названий)
     'kuzminsky': "Кузьминский районный суд",
     'lefortovsky': "Лефортовский районный суд",
     'lyublinsky': "Люблинский районный суд",
@@ -16,25 +15,17 @@ ORGANIZATIONS = {
     'tverskoy': "Тверской районный суд",
     'cheremushkinsky': "Черемушкинский районный суд",
     'chertanovsky': "Чертановский районный суд",
-
-    # 2. Мосгорсуд и кассация
     'msk_city': "Московский городской суд",
     'kassatsionny2': "Второй кассационный суд общей юрисдикции",
-
-    # 3. Городские суды Московской области
     'domodedovo': "Домодедовский городской суд",
     'lyuberetsky': "Люберецкий городской суд",
     'vidnoye': "Видновский городской суд",
-
-    # 4. Прочие организации (по алфавиту)
     'justice_peace': "Мировые судьи (судебный участок)",
     'fns': "ФНС",
     'gibdd': "ГИБДД",
     'notary': "Нотариус",
     'post': "Почта России",
     'rosreestr': "Росреестр",
-
-    # 5. Другое
     'other': "Другая организация (указать)"
 }
 
@@ -77,6 +68,11 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     time_now = get_now().strftime("%H:%M")
 
     if success:
+        try:
+            add_trip(user_id, custom_org)  # 🟢 Google Sheets
+        except Exception as e:
+            print(f"[Google Sheets] Ошибка при добавлении поездки: {e}")
+
         await update.message.reply_text(
             f"🚀 Поездка в *{custom_org}* начата в *{time_now}*\nХорошей дороги! 🚗",
             parse_mode="Markdown"
@@ -116,8 +112,13 @@ async def handle_trip_save(update: Update, context, org_id: str, org_name: str):
     time_now = get_now().strftime('%H:%M')
 
     if success:
+        try:
+            add_trip(user_id, org_name)  # 🟢 Google Sheets
+        except Exception as e:
+            print(f"[Google Sheets] Ошибка при добавлении поездки: {e}")
+
         await update.callback_query.edit_message_text(
-            f"🚌 Поездка в *{org_name}* начата в *{time_now}*\nХорошей дороги! 🚗",
+            f"🚌 Поездка в *{org_name}* начата в *{time_now}*.\nХорошей дороги! 🚗",
             parse_mode="Markdown"
         )
     else:

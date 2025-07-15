@@ -1,9 +1,9 @@
 from telegram import Update
 from telegram.ext import ContextTypes
-from datetime import datetime, timedelta, time
-import sqlite3
+from datetime import datetime, timedelta
 import pandas as pd
 from io import BytesIO
+from sheets import get_trip_dataframe  # 👈 Чтение из Google Sheets
 
 ADMIN_IDS = [414634622, 1745732977]
 
@@ -16,7 +16,6 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 1) Разбор аргументов: /report [start] [end]
     args = context.args
     start_date = end_date = None
     try:
@@ -31,112 +30,57 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 2) Вытягиваем все поездки
-    conn = sqlite3.connect("court_tracking.db")
-    df = pd.read_sql("""
-        SELECT e.full_name AS ФИО,
-               t.organization_name AS Организация,
-               t.start_datetime,
-               t.end_datetime
-        FROM trips t
-        JOIN employees e ON t.user_id = e.user_id
-        WHERE e.is_active = 1
-        ORDER BY t.start_datetime
-    """, conn)
-    conn.close()
-
+    df = get_trip_dataframe()
     if df.empty:
-        await update.message.reply_text(
-            "📭 Нет данных для отчёта.",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("📭 Нет данных для отчёта.")
         return
 
-    # 3) Фильтрация по дате через подстроку YYYY-MM-DD
+    df["Дата"] = pd.to_datetime(df["Дата"], format="%d.%m.%Y", errors="coerce")
     if start_date:
-        iso = start_date.isoformat()
-        df = df[df['start_datetime'].astype(str).str.contains(iso, na=False)]
-    if end_date and start_date and end_date != start_date:
-        days = pd.date_range(start_date, end_date).date
-        mask = pd.Series(False, index=df.index)
-        for d in days:
-            mask |= df['start_datetime'].astype(str).str.contains(d.isoformat(), na=False)
-        df = df[mask]
+        df = df[df["Дата"] >= pd.to_datetime(start_date)]
+    if end_date:
+        df = df[df["Дата"] <= pd.to_datetime(end_date)]
 
     if df.empty:
-        await update.message.reply_text(
-            "📭 Нет данных за указанный период.",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("📭 Нет данных за указанный период.")
         return
 
-    # 4) Формируем колонки
-
-    # Дата: ДД.MM.ГГГГ
-    df['Дата'] = (
-        pd.to_datetime(df['start_datetime'].str.slice(0, 10),
-                       format="%Y-%m-%d", errors="coerce")
-          .dt.strftime("%d.%m.%Y")
-    )
-
-    # Начало поездки: ЧЧ:ММ
-    df['Начало поездки'] = df['start_datetime'].astype(str).str.slice(11, 16)
-
-    # Конец поездки: ЧЧ:ММ или '-'
-    df['Конец поездки'] = (
-        df['end_datetime'].astype(str).str.slice(11, 16).fillna("-")
-    )
-
-    # 5) Вычисляем продолжительность (чч:мм)
     def calc_duration(row):
-        s = row['Начало поездки']
-        e = row['Конец поездки']
-        if s == "-" or e in (None, "-", ""):
+        s = row["Начало поездки"]
+        e = row["Конец поездки"]
+        if not s or not e or s == "-" or e == "-":
             return "-"
         try:
-            dt_s = datetime.strptime(s, "%H:%M")
-            dt_e = datetime.strptime(e, "%H:%M")
-        except ValueError:
+            dt_s = datetime.strptime(s[-5:], "%H:%M")
+            dt_e = datetime.strptime(e[-5:], "%H:%M")
+        except:
             return "-"
         delta = dt_e - dt_s
         if delta.total_seconds() < 0:
             delta += timedelta(days=1)
-        h = delta.seconds // 3600
-        m = (delta.seconds % 3600) // 60
-        return f"{h:02}:{m:02}"
+        return f"{delta.seconds // 3600:02}:{(delta.seconds % 3600) // 60:02}"
 
-    df['Продолжительность'] = df.apply(calc_duration, axis=1)
+    df["Продолжительность"] = df.apply(calc_duration, axis=1)
 
-    # 6) Итоговый DataFrame
     final = df[[
-        'ФИО',
-        'Организация',
-        'Дата',
-        'Начало поездки',
-        'Конец поездки',
-        'Продолжительность'
+        "ФИО",
+        "Организация",
+        "Дата",
+        "Начало поездки",
+        "Конец поездки",
+        "Продолжительность"
     ]]
 
-    # 7) Запись в Excel с авто‑шириной столбцов
     output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        final.to_excel(writer, sheet_name='Отчёт', index=False)
-        ws = writer.sheets['Отчёт']
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        final.to_excel(writer, sheet_name="Отчёт", index=False)
+        ws = writer.sheets["Отчёт"]
         for idx, col in enumerate(final.columns):
             width = max(final[col].astype(str).map(len).max(), len(col)) + 2
             ws.set_column(idx, idx, width)
     output.seek(0)
 
-    # 8) Имя файла: «отчет по поездкам дд.мм.гггг_чч.мм»
     now = datetime.now()
     fname = f"отчет по поездкам {now.strftime('%d.%m.%Y_%H.%M')}.xlsx"
-
-    # 9) Отправка
-    await update.message.reply_document(
-        document=output,
-        filename=fname
-    )
-    await update.message.reply_text(
-        "📄 Отчёт сформирован и отправлен.",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_document(document=output, filename=fname)
+    await update.message.reply_text("📄 Отчёт сформирован и отправлен.")

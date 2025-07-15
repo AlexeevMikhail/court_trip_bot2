@@ -6,3 +6,6 @@ xlsxwriter
 flask==2.3.2
 APScheduler==3.10.1
 psycopg2-binary
+gspread
+gspread-formatting
+oauth2client
