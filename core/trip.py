@@ -1,7 +1,7 @@
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from utils.database import is_registered, save_trip_start, get_now
-from sheets import add_trip  # 👈 Импорт функции Google Sheets
+from core.sheets import add_trip  # 👈 Импорт функции Google Sheets
 import sqlite3
 
 ORGANIZATIONS = {

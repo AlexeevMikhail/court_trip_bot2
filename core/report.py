@@ -3,7 +3,7 @@ from telegram.ext import ContextTypes
 from datetime import datetime, timedelta
 import pandas as pd
 from io import BytesIO
-from sheets import get_trip_dataframe  # 👈 Чтение из Google Sheets
+from core.sheets import get_trip_dataframe  # 👈 Чтение из Google Sheets
 
 ADMIN_IDS = [414634622, 1745732977]
 

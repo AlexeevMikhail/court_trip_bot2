@@ -1,7 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 import sqlite3
-from sheets import add_user  # 👈 Правильное имя функции из sheets.py
+from core.sheets import add_user  # 👈 Правильное имя функции из sheets.py
 
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
