@@ -1,18 +1,25 @@
+import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import pandas as pd
+import json
 
-# Пути и ID
 SPREADSHEET_ID = "10YnZvLU6g-k9a8YvC8tp5xv1sfYC-j0C71z83Add4dQ"
 SHEET_USERS = "Пользователи"
 SHEET_TRIPS = "Поездки"
 
-# Подключение
 def get_client():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("court-trip-bot-10ea471d3f51.json", scope)
-    return gspread.authorize(creds)
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        json_key_str = os.getenv("GOOGLE_SHEETS_JSON")
+        if not json_key_str:
+            raise ValueError("[Google Sheets] Переменная окружения GOOGLE_SHEETS_JSON не установлена.")
+        info = json.loads(json_key_str)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(info, scope)
+        return gspread.authorize(creds)
+    except Exception as e:
+        raise RuntimeError(f"[Google Sheets] Ошибка при авторизации: {e}")
 
 def add_user(user_id: int, full_name: str, username: str):
     try:
@@ -41,12 +48,11 @@ def add_trip(full_name: str, org: str, start_time: datetime, end_time: datetime 
     except Exception as e:
         print(f"[Google Sheets] Ошибка при добавлении поездки: {e}")
 
-def get_trip_dataframe():
+def get_trip_dataframe() -> pd.DataFrame:
     try:
         client = get_client()
         sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_TRIPS)
         data = sheet.get_all_records()
         return pd.DataFrame(data)
     except Exception as e:
-        print(f"[Google Sheets] Ошибка при получении отчёта: {e}")
-        return pd.DataFrame()
+        raise RuntimeError(f"[Google Sheets] Ошибка при получении отчёта: {e}")
