@@ -1,9 +1,9 @@
 # core/trip.py
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
-from utils.database import is_registered, save_trip_start, get_now
-from core.sheets import add_trip  # интеграция с Google Sheets
 import sqlite3
+from utils.database import is_registered, save_trip_start, get_now
+from core.sheets import add_trip, end_trip_in_sheet  # ← добавили импорт
 
 # Словарь организаций
 ORGANIZATIONS = {
@@ -36,124 +36,132 @@ async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_registered(user_id):
         await update.message.reply_text(
             "❌ Вы не зарегистрированы!\n"
-            "Отправьте команду: `/register Иванов Иван`",
+            "Отправьте команду: /register Иванов Иван",
             parse_mode="Markdown"
         )
         return
 
+    # Собираем inline‑кнопки
     keyboard = [
         [InlineKeyboardButton(name, callback_data=f"org_{org_id}")]
         for org_id, name in ORGANIZATIONS.items()
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🚗 *Куда вы отправляетесь?*\n"
-        "Пожалуйста, выберите организацию ниже:",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
+        "🚗 *Куда вы отправляетесь?*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Аналогично start, но для пользовательского ввода
     user_id = update.effective_user.id
     custom_org = update.message.text.strip()
-
-    if not custom_org:
-        await update.message.reply_text("❌ Название организации не может быть пустым.")
-        return
-    if not is_registered(user_id):
-        await update.message.reply_text("❌ Вы не зарегистрированы.")
+    if not custom_org or not is_registered(user_id):
+        await update.message.reply_text("❌ Проверьте регистрацию и название организации.")
         return
 
     success = save_trip_start(user_id, "other", custom_org)
     now = get_now()
     time_now = now.strftime("%H:%M")
 
-    if success:
-        # получаем имя
-        conn = sqlite3.connect("court_tracking.db")
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT full_name FROM employees WHERE user_id = ?",
-            (user_id,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        full_name = row[0] if row else "Неизвестный пользователь"
+    if not success:
+        await update.message.reply_text("❌ Уже в поездке.")
+        return
 
-        try:
-            add_trip(full_name, custom_org, now)
-        except Exception as e:
-            print(f"[Google Sheets] Ошибка при добавлении поездки: {e}")
+    # Получаем полное имя
+    conn = sqlite3.connect("court_tracking.db")
+    cur = conn.cursor()
+    cur.execute("SELECT full_name FROM employees WHERE user_id = ?", (user_id,))
+    full_name = cur.fetchone()[0]
+    conn.close()
 
-        # выводим сообщение и кнопку Завершить
-        await update.message.reply_text(
-            f"🚀 Поездка в *{custom_org}* начата в *{time_now}*\nХорошей дороги! 🚗",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🏁 Завершить поездку", callback_data="end_trip")]]
-            )
+    # Записываем в Google Sheets начало поездки
+    try:
+        add_trip(full_name, custom_org, now)
+    except Exception as e:
+        print(f"[Google Sheets] Ошибка добавления старта: {e}")
+
+    # Отправляем кнопку завершения
+    await update.message.reply_text(
+        f"🚀 Поездка в *{custom_org}* начата в *{time_now}*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🏦 Возврат", callback_data="return_trip")]]
         )
-    else:
-        await update.message.reply_text(
-            "❌ Не удалось начать поездку. Возможно, вы уже в пути."
-        )
+    )
 
 async def handle_trip_save(update: Update, context, org_id: str, org_name: str):
-    # то же, что handle_custom_org_input, только для готовых org_id
+    # Обработчик для готовых организаций
     user_id = update.effective_user.id
     success = save_trip_start(user_id, org_id, org_name)
     now = get_now()
     time_now = now.strftime("%H:%M")
 
-    if success:
-        conn = sqlite3.connect("court_tracking.db")
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT full_name FROM employees WHERE user_id = ?",
-            (user_id,)
+    if not success:
+        return await update.callback_query.edit_message_text(
+            "❌ Уже в поездке.", parse_mode="Markdown"
         )
-        row = cursor.fetchone()
-        conn.close()
-        full_name = row[0] if row else "Неизвестный пользователь"
 
-        try:
-            add_trip(full_name, org_name, now)
-        except Exception as e:
-            print(f"[Google Sheets] Ошибка при добавлении поездки: {e}")
+    # Получаем имя из БД
+    conn = sqlite3.connect("court_tracking.db")
+    cur = conn.cursor()
+    cur.execute("SELECT full_name FROM employees WHERE user_id = ?", (user_id,))
+    full_name = cur.fetchone()[0]
+    conn.close()
 
-        await update.callback_query.edit_message_text(
-            f"🚌 Поездка в *{org_name}* начата в *{time_now}*\nХорошей дороги! 🚗",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🏁 Завершить поездку", callback_data="end_trip")]]
-            )
+    try:
+        add_trip(full_name, org_name, now)  # запись старта в Google Sheets
+    except Exception as e:
+        print(f"[Google Sheets] Ошибка добавления старта: {e}")
+
+    await update.callback_query.edit_message_text(
+        f"🚌 Поездка в *{org_name}* начата в *{time_time}*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🏦 Возврат", callback_data="return_trip")]]
         )
-    else:
-        await update.callback_query.edit_message_text(
-            "❌ *Не удалось начать поездку.*\nВозможно, вы уже в пути.",
-            parse_mode="Markdown"
-        )
+    )
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /return и кнопка «Возврат»."""
     user_id = update.effective_user.id
     now = get_now()
 
-    # обновляем БД
-    conn = sqlite3.connect('court_tracking.db')
-    cursor = conn.cursor()
-    cursor.execute(
+    # Обновляем SQLite
+    conn = sqlite3.connect("court_tracking.db")
+    cur = conn.cursor()
+    cur.execute(
         "UPDATE trips SET end_datetime = ?, status = 'completed' "
         "WHERE user_id = ? AND status = 'in_progress'",
         (now, user_id)
     )
-
-    if cursor.rowcount > 0:
-        text = f"🏁 Поездка завершена в *{now.strftime('%H:%M')}*"
-    else:
-        text = "⚠️ *У вас нет активной поездки*"
-
+    updated = cur.rowcount
     conn.commit()
+
+    # Достаём полные данные поездки для Sheets
+    if updated:
+        cur.execute(
+            "SELECT full_name, org_name, start_datetime FROM trips "
+            "WHERE user_id = ? AND status = 'completed' "
+            "ORDER BY start_datetime DESC LIMIT 1",
+            (user_id,)
+        )
+        full_name, org_name, start_dt = cur.fetchone()
     conn.close()
 
-    # отправляем результат
-    await update.effective_message.reply_text(text, parse_mode="Markdown")
+    # Если поездка найдена — пишем в Google Sheets
+    if updated:
+        duration = now - start_dt
+        try:
+            await end_trip_in_sheet(full_name, org_name, start_dt, now, duration)
+        except Exception as e:
+            print(f"[Google Sheets] Ошибка при закрытии поездки: {e}")
+
+        await update.effective_message.reply_text(
+            f"🏁 Поездка в *{org_name}* завершена в *{now.strftime('%H:%M')}*",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.effective_message.reply_text(
+            "⚠️ У вас нет активной поездки.", parse_mode="Markdown"
+        )

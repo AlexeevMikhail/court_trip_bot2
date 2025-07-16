@@ -1,9 +1,9 @@
 # handlers/callbacks.py
+
 from telegram import Update
 from telegram.ext import ContextTypes, CallbackQueryHandler
-from core.trip import handle_trip_save, end_trip
+from core.trip import handle_trip_save, handle_custom_org_input, end_trip
 from core.trip import ORGANIZATIONS
-from core.trip import handle_custom_org_input
 
 async def handle_organization_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -24,11 +24,13 @@ async def handle_end_trip_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     await end_trip(update, context)
 
+# Регистрируем обработчики коллбэков для inline‑кнопок
 organization_callback = CallbackQueryHandler(
     handle_organization_callback,
     pattern=r"^org_"
 )
+# теперь ловим именно return_trip
 end_trip_callback = CallbackQueryHandler(
     handle_end_trip_callback,
-    pattern=r"^end_trip$"
+    pattern=r"^return_trip$"
 )
