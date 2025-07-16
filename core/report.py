@@ -2,97 +2,72 @@
 
 from telegram import Update
 from telegram.ext import ContextTypes
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 from io import BytesIO
-from core.sheets import get_trip_dataframe  # 👈 чтение всех строк из Google Sheets
+from core.sheets import get_trip_dataframe
 
-# Список админов, которым разрешён отчёт
+# ID админов, которые могут делать отчёт
 ADMIN_IDS = [414634622, 1745732977]
 
 async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Команда: /report ДД.MM.ГГГГ [ДД.MM.ГГГГ]
-    Формирует Excel‑файл с поездками за указанный период и отсылает его админам.
-    """
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
-        await update.message.reply_text(
-            "🚫 У вас нет прав для получения отчёта."
-        )
-        return
+        return await update.message.reply_text("🚫 У вас нет прав для отчёта.")
 
     args = context.args
-    # Разбираем даты из аргументов
+    # парсим даты, если указаны
     start_date = end_date = None
     try:
         if len(args) >= 1:
-            start_date = datetime.strptime(args[0], "%d.%m.%Y").date()
+            start_date = datetime.strptime(args[0], "%d.%m.%Y")
         if len(args) >= 2:
-            end_date = datetime.strptime(args[1], "%d.%m.%Y").date()
+            end_date = datetime.strptime(args[1], "%d.%m.%Y")
     except ValueError:
-        await update.message.reply_text(
-            "📌 Формат команды:\n/report ДД.MM.ГГГГ [ДД.MM.ГГГГ]"
-        )
-        return
+        return await update.message.reply_text("📌 Формат: /report ДД.MM.ГГГГ [ДД.MM.ГГГГ]")
 
-    # Получаем все записи из Google Sheets
     df = get_trip_dataframe()
     if df.empty:
-        await update.message.reply_text("📭 Нет данных для отчёта.")
-        return
+        return await update.message.reply_text("📭 Данных нет.")
 
-    # Приводим колонку "Дата" к datetime
-    df["Дата"] = pd.to_datetime(df["Дата"], format="%d.%m.%Y", errors="coerce")
-
-    # Фильтруем по диапазону
+    # приводим колонку «Дата» к datetime
+    df["Дата"] = pd.to_datetime(df["Дата"], dayfirst=True, format="%d.%m.%Y", errors="coerce")
     if start_date:
-        df = df[df["Дата"] >= pd.to_datetime(start_date)]
+        df = df[df["Дата"] >= start_date]
     if end_date:
-        df = df[df["Дата"] <= pd.to_datetime(end_date)]
+        df = df[df["Дата"] <= end_date]
 
     if df.empty:
-        await update.message.reply_text("📭 Нет данных за указанный период.")
-        return
+        return await update.message.reply_text("📭 Данных за указанный период нет.")
 
-    # Вычисляем продолжительность, если её нет или некорректно
-    def calc_duration(row):
-        s = row.get("Начало поездки", "")
-        e = row.get("Конец поездки", "")
-        if not s or not e or s == "-" or e == "-":
-            return "-"
+    # рассчитываем продолжительность, если её не было
+    def calc_duration(r):
+        s, e = r["Начало поездки"], r["Конец поездки"]
         try:
-            dt_s = datetime.strptime(s[-5:], "%H:%M")
-            dt_e = datetime.strptime(e[-5:], "%H:%M")
+            ts = datetime.strptime(s, "%H:%M")
+            te = datetime.strptime(e, "%H:%M")
         except:
             return "-"
-        delta = dt_e - dt_s
+        delta = te - ts
         if delta.total_seconds() < 0:
-            delta += timedelta(days=1)
-        hours = delta.seconds // 3600
-        minutes = (delta.seconds % 3600) // 60
-        return f"{hours:02d}:{minutes:02d}"
+            delta += pd.Timedelta(days=1)
+        h, rem = divmod(int(delta.total_seconds()), 3600)
+        m, _   = divmod(rem, 60)
+        return f"{h:02d}:{m:02d}"
 
     df["Продолжительность"] = df.apply(calc_duration, axis=1)
 
-    # Отбираем нужные колонки и переименовываем, если надо
-    final = df[
-        ["ФИО", "Организация", "Дата", "Начало поездки", "Конец поездки", "Продолжительность"]
-    ]
+    # формируем файл Excel
+    final = df[["ФИО","Организация","Дата","Начало поездки","Конец поездки","Продолжительность"]]
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+        final.to_excel(w, index=False, sheet_name="Отчёт")
+        ws = w.sheets["Отчёт"]
+        for i, col in enumerate(final.columns):
+            width = max(final[col].astype(str).map(len).max(), len(col)) + 2
+            ws.set_column(i, i, width)
+    buf.seek(0)
 
-    # Записываем в Excel в буфер
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        final.to_excel(writer, sheet_name="Отчёт", index=False)
-        ws = writer.sheets["Отчёт"]
-        # Автоматически подгоняем ширину колонок
-        for idx, col in enumerate(final.columns):
-            max_len = final[col].astype(str).map(len).max()
-            ws.set_column(idx, idx, max(max_len, len(col)) + 2)
-    output.seek(0)
-
-    # Формируем имя файла и отправляем
-    now = datetime.now()
-    fname = f"отчет_{now.strftime('%d.%m.%Y_%H.%M')}.xlsx"
-    await update.message.reply_document(document=output, filename=fname)
-    await update.message.reply_text("📄 Отчёт сформирован и отправлен.")
+    fname = f"report_{datetime.now().strftime('%d%m%Y_%H%M')}.xlsx"
+    await update.message.reply_document(document=buf, filename=fname)
+    await update.message.reply_text("📄 Готово.")
