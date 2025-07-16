@@ -33,7 +33,6 @@ ORGANIZATIONS = {
 }
 
 async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показываем inline‑кнопки для выбора организации."""
     query = update.callback_query
     target = query or update.message
     if query:
@@ -42,8 +41,7 @@ async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = target.from_user.id
     if not is_registered(user_id):
         return await target.reply_text(
-            "❌ Вы не зарегистрированы!\n"
-            "Отправьте /register Иванов Иван"
+            "❌ Вы не зарегистрированы!\nОтправьте /register Иванов Иван"
         )
 
     keyboard = [
@@ -57,11 +55,11 @@ async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_trip_save(update: Update, context: ContextTypes.DEFAULT_TYPE, org_id: str, org_name: str):
-    """Обрабатываем выбор готовой организации."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
 
+    # Сохраняем старт в SQLite
     success = save_trip_start(user_id, org_id, org_name)
     now = get_now()
     time_now = now.strftime("%H:%M")
@@ -69,7 +67,7 @@ async def handle_trip_save(update: Update, context: ContextTypes.DEFAULT_TYPE, o
     if not success:
         return await query.edit_message_text("❌ У вас уже есть незавершённая поездка.")
 
-    # Получаем ФИО
+    # Получаем ФИО из таблицы employees
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
@@ -82,17 +80,16 @@ async def handle_trip_save(update: Update, context: ContextTypes.DEFAULT_TYPE, o
     except Exception as e:
         print(f"[Google Sheets] Ошибка при записи старта: {e}")
 
-    # Предлагаем кнопку завершения
+    # Отправляем сообщение с кнопкой завершения (inline)
     await query.edit_message_text(
         f"🚌 Поездка в *{org_name}* начата в *{time_now}*.\nХорошей дороги! 🚗",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🏁 Завершить поездку", callback_data="end_trip")]]
+            [[InlineKeyboardButton("🏦 Возврат", callback_data="end_trip")]]
         )
     )
 
 async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатываем ввод организации вручную (после выбора 'other')."""
     user_id = update.message.from_user.id
     org_name = update.message.text.strip()
 
@@ -123,7 +120,6 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     )
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Завершаем поездку и пишем конец и длительность в Google Sheets."""
     query = update.callback_query
     target = query or update.message
     if query:
@@ -144,16 +140,22 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
 
     if updated:
+        # 1) берём org и время старта из trips
         cur.execute(
-            "SELECT full_name, org_name, start_datetime FROM trips "
+            "SELECT organization_name, start_datetime FROM trips "
             "WHERE user_id = ? AND status = 'completed' "
             "ORDER BY start_datetime DESC LIMIT 1",
             (user_id,)
         )
-        full_name, org_name, start_dt = cur.fetchone()
+        org_name, start_dt = cur.fetchone()
+
+        # 2) берём full_name из employees
+        full_name = conn.execute(
+            "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
+        ).fetchone()[0]
         conn.close()
 
-        # Записываем окончание в Google Sheets
+        # 3) пишем окончание и длительность в Google Sheets
         try:
             await end_trip_in_sheet(full_name, org_name, start_dt, now, now - start_dt)
         except Exception as e:
@@ -164,7 +166,6 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         text = "⚠️ У вас нет активной поездки."
 
-    # Ответ пользователю
     if query:
         await query.edit_message_text(text, parse_mode="Markdown")
     else:
