@@ -1,9 +1,10 @@
 # core/trip.py
+
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 import sqlite3
 from utils.database import is_registered, save_trip_start, get_now
-from core.sheets import add_trip, end_trip_in_sheet  # ← добавили импорт
+from core.sheets import add_trip, end_trip_in_sheet
 
 # Словарь организаций
 ORGANIZATIONS = {
@@ -36,12 +37,10 @@ async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_registered(user_id):
         await update.message.reply_text(
             "❌ Вы не зарегистрированы!\n"
-            "Отправьте команду: /register Иванов Иван",
-            parse_mode="Markdown"
+            "Отправьте команду: /register Иванов Иван"
         )
         return
 
-    # Собираем inline‑кнопки
     keyboard = [
         [InlineKeyboardButton(name, callback_data=f"org_{org_id}")]
         for org_id, name in ORGANIZATIONS.items()
@@ -53,7 +52,6 @@ async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Аналогично start, но для пользовательского ввода
     user_id = update.effective_user.id
     custom_org = update.message.text.strip()
     if not custom_org or not is_registered(user_id):
@@ -68,20 +66,17 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("❌ Уже в поездке.")
         return
 
-    # Получаем полное имя
     conn = sqlite3.connect("court_tracking.db")
     cur = conn.cursor()
     cur.execute("SELECT full_name FROM employees WHERE user_id = ?", (user_id,))
     full_name = cur.fetchone()[0]
     conn.close()
 
-    # Записываем в Google Sheets начало поездки
     try:
         add_trip(full_name, custom_org, now)
     except Exception as e:
         print(f"[Google Sheets] Ошибка добавления старта: {e}")
 
-    # Отправляем кнопку завершения
     await update.message.reply_text(
         f"🚀 Поездка в *{custom_org}* начата в *{time_now}*",
         parse_mode="Markdown",
@@ -91,18 +86,18 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     )
 
 async def handle_trip_save(update: Update, context, org_id: str, org_name: str):
-    # Обработчик для готовых организаций
     user_id = update.effective_user.id
     success = save_trip_start(user_id, org_id, org_name)
     now = get_now()
     time_now = now.strftime("%H:%M")
 
     if not success:
-        return await update.callback_query.edit_message_text(
-            "❌ Уже в поездке.", parse_mode="Markdown"
+        await update.callback_query.edit_message_text(
+            "❌ Уже в поездке.",
+            parse_mode="Markdown"
         )
+        return
 
-    # Получаем имя из БД
     conn = sqlite3.connect("court_tracking.db")
     cur = conn.cursor()
     cur.execute("SELECT full_name FROM employees WHERE user_id = ?", (user_id,))
@@ -110,12 +105,12 @@ async def handle_trip_save(update: Update, context, org_id: str, org_name: str):
     conn.close()
 
     try:
-        add_trip(full_name, org_name, now)  # запись старта в Google Sheets
+        add_trip(full_name, org_name, now)
     except Exception as e:
         print(f"[Google Sheets] Ошибка добавления старта: {e}")
 
     await update.callback_query.edit_message_text(
-        f"🚌 Поездка в *{org_name}* начата в *{time_time}*",
+        f"🚌 Поездка в *{org_name}* начата в *{time_now}*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("🏦 Возврат", callback_data="return_trip")]]
@@ -123,11 +118,9 @@ async def handle_trip_save(update: Update, context, org_id: str, org_name: str):
     )
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /return и кнопка «Возврат»."""
     user_id = update.effective_user.id
     now = get_now()
 
-    # Обновляем SQLite
     conn = sqlite3.connect("court_tracking.db")
     cur = conn.cursor()
     cur.execute(
@@ -138,7 +131,6 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     updated = cur.rowcount
     conn.commit()
 
-    # Достаём полные данные поездки для Sheets
     if updated:
         cur.execute(
             "SELECT full_name, org_name, start_datetime FROM trips "
@@ -149,7 +141,6 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         full_name, org_name, start_dt = cur.fetchone()
     conn.close()
 
-    # Если поездка найдена — пишем в Google Sheets
     if updated:
         duration = now - start_dt
         try:
@@ -163,5 +154,6 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.effective_message.reply_text(
-            "⚠️ У вас нет активной поездки.", parse_mode="Markdown"
+            "⚠️ У вас нет активной поездки.",
+            parse_mode="Markdown"
         )
