@@ -3,11 +3,12 @@
 import os
 import json
 import gspread
+import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-# 1. Загружаем .env
+# 1. Подгружаем .env
 load_dotenv()
 GOOGLE_SHEETS_JSON = os.getenv("GOOGLE_SHEETS_JSON")
 SPREADSHEET_ID     = os.getenv("SPREADSHEET_ID")
@@ -15,7 +16,7 @@ SPREADSHEET_ID     = os.getenv("SPREADSHEET_ID")
 if not GOOGLE_SHEETS_JSON or not SPREADSHEET_ID:
     raise ValueError("Не заданы GOOGLE_SHEETS_JSON или SPREADSHEET_ID в .env")
 
-# 2. Авторизация в Google API
+# 2. Авторизация
 creds_dict = json.loads(GOOGLE_SHEETS_JSON)
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -26,58 +27,48 @@ client = gspread.authorize(creds)
 
 def _open_sheet(name: str = None):
     """
-    Открывает нужный лист: если name указан — по названию, иначе первая вкладка.
+    Открывает лист по имени (если указано) или первую вкладку.
     """
-    spreadsheet = client.open_by_key(SPREADSHEET_ID)
-    if name:
-        return spreadsheet.worksheet(name)
-    return spreadsheet.sheet1
+    ss = client.open_by_key(SPREADSHEET_ID)
+    return ss.worksheet(name) if name else ss.sheet1
 
 def add_user(full_name: str, user_id: int):
     """
-    Добавляет нового пользователя в Google Sheets.
-    Запись идёт в лист 'Пользователи' (если такого нет — в первую вкладку).
-    Столбцы: A=ФИО, B=Telegram user_id.
+    Добавляет пользователя в лист 'Пользователи'.
     """
     try:
         sheet = _open_sheet("Пользователи")
     except gspread.exceptions.WorksheetNotFound:
-        sheet = _open_sheet()  # fallback на первую вкладку
-    row = [full_name, str(user_id)]
-    sheet.append_row(row, value_input_option="USER_ENTERED")
+        sheet = _open_sheet()
+    sheet.append_row([full_name, str(user_id)], value_input_option="USER_ENTERED")
 
 def add_trip(full_name: str, org_name: str, start_dt: datetime):
     """
-    Добавляет строку с началом поездки в лист 'Поездки' или первую вкладку.
-    Столбцы:
-      A: ФИО
-      B: Организация
-      C: Дата
-      D: Начало поездки (HH:MM)
-      E: Конец поездки  (оставляем пустым)
-      F: Продолжительность (оставляем пустым)
+    Добавляет новую строку в лист 'Поездки' с началом поездки.
     """
     try:
         sheet = _open_sheet("Поездки")
     except gspread.exceptions.WorksheetNotFound:
         sheet = _open_sheet()
-    date_str  = start_dt.strftime("%d.%m.%Y")
-    start_str = start_dt.strftime("%H:%M")
-    sheet.append_row([full_name, org_name, date_str, start_str, "", ""],
-                     value_input_option="USER_ENTERED")
+    sheet.append_row([
+        full_name,
+        org_name,
+        start_dt.strftime("%d.%m.%Y"),
+        start_dt.strftime("%H:%M"),
+        "",  # конец
+        ""   # длительность
+    ], value_input_option="USER_ENTERED")
 
 async def end_trip_in_sheet(
-    full_name: str,
-    org_name:   str,
-    start_dt:   datetime,
-    end_dt:     datetime,
-    duration:   timedelta
-):
+        full_name: str,
+        org_name:   str,
+        start_dt:   datetime,
+        end_dt:     datetime,
+        duration:   timedelta
+    ):
     """
-    Обновляет в листе 'Поездки' (или первой вкладке) время конца и длительность поездки.
-    Ищем последнюю пустую строку для данного full_name/org_name и заполняем:
-    E: end_dt.strftime("%H:%M")
-    F: формат duration (H:MM или H:MM:SS)
+    Находит последнюю открытую поездку в листе 'Поездки'
+    и дописывает время конца и продолжительность.
     """
     try:
         sheet = _open_sheet("Поездки")
@@ -85,16 +76,37 @@ async def end_trip_in_sheet(
         sheet = _open_sheet()
 
     all_values = sheet.get_all_values()
+    # идём снизу вверх, пропуская заголовок
     for idx in range(len(all_values)-1, 0, -1):
         row = all_values[idx]
-        if row[0] == full_name and row[1] == org_name and row[4] == "":
+        if row[0]==full_name and row[1]==org_name and row[4]=="":
             end_str = end_dt.strftime("%H:%M")
-            total_seconds = int(duration.total_seconds())
-            hours   = total_seconds // 3600
-            minutes = (total_seconds % 3600) // 60
-            seconds = total_seconds % 60
-            dur_str = f"{hours}:{minutes:02d}" + (f":{seconds:02d}" if seconds else "")
-            sheet.update_cell(idx+1, 5, end_str)   # колонка E
-            sheet.update_cell(idx+1, 6, dur_str)   # колонка F
+            secs    = int(duration.total_seconds())
+            h, m = divmod(secs, 3600)
+            m, s = divmod(m, 60)
+            dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
+            sheet.update_cell(idx+1, 5, end_str)
+            sheet.update_cell(idx+1, 6, dur_str)
             return
     print(f"[Google Sheets] Не найдена открытая поездка для {full_name}, {org_name}")
+# core/sheets.py (продолжение)
+
+def get_trip_dataframe(start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Возвращает pandas.DataFrame со всеми поездками из листа 'Поездки'
+    в диапазоне [start_date; end_date], где даты в формате 'ДД.MM.ГГГГ'.
+    """
+    try:
+        sheet = _open_sheet("Поездки")
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = _open_sheet()
+    records = sheet.get_all_records()  # список словарей по заголовкам столбцов
+
+    df = pd.DataFrame(records)
+    # Приводим колонки к нужным типам
+    df["Дата"] = pd.to_datetime(df["Дата"], dayfirst=True, format="%d.%m.%Y")
+    # Фильтр по дате
+    start = pd.to_datetime(start_date, dayfirst=True, format="%d.%m.%Y")
+    end   = pd.to_datetime(end_date,   dayfirst=True, format="%d.%m.%Y")
+    mask  = (df["Дата"] >= start) & (df["Дата"] <= end)
+    return df.loc[mask]
