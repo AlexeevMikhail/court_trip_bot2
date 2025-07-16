@@ -32,6 +32,17 @@ def _open_sheet(name: str = None):
     ss = client.open_by_key(SPREADSHEET_ID)
     return ss.worksheet(name) if name else ss.sheet1
 
+def add_user(full_name: str, user_id: int):
+    """
+    Добавляет нового пользователя в лист 'Пользователи'.
+    Столбцы: A=ФИО, B=Telegram user_id.
+    """
+    try:
+        sheet = _open_sheet("Пользователи")
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = _open_sheet()
+    sheet.append_row([full_name, str(user_id)], value_input_option="USER_ENTERED")
+
 def add_trip(full_name: str, org_name: str, start_dt: datetime):
     """
     Добавляет в лист 'Поездки' строку со стартом поездки.
@@ -51,19 +62,17 @@ async def end_trip_in_sheet(
 ):
     """
     Находит в листе 'Поездки' последнюю незавершённую поездку
-    (совпадают ФИО, организация, дата и время старта) и дописывает:
+    и дописывает:
       E: время окончания (HH:MM)
       F: длительность (H:MM или H:MM:SS)
     """
     sheet = _open_sheet("Поездки")
-    records = sheet.get_all_records()  # список словарей по заголовкам
+    records = sheet.get_all_records()
 
-    # Строка заголовков:
-    # 'ФИО','Организация','Дата','Начало поездки','Конец поездки','Продолжительность'
     date_str  = start_dt.strftime("%d.%m.%Y")
     start_str = start_dt.strftime("%H:%M")
 
-    for idx, row in enumerate(records, start=2):  # реальные номера строк в таблице
+    for idx, row in enumerate(records, start=2):
         if (row.get("ФИО") == full_name
             and row.get("Организация") == org_name
             and row.get("Дата") == date_str
@@ -76,18 +85,16 @@ async def end_trip_in_sheet(
             m, s   = divmod(rem, 60)
             dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
 
-            sheet.update_cell(idx, 5, end_str)   # колонка E
-            sheet.update_cell(idx, 6, dur_str)   # колонка F
+            sheet.update_cell(idx, 5, end_str)
+            sheet.update_cell(idx, 6, dur_str)
             return
 
-    # Если мы сюда попали — ничего не нашли, логируем
     print(f"[Google Sheets] Не найдена открытая поездка для "
           f"{full_name}, {org_name} ({date_str} {start_str})")
 
 def get_trip_dataframe() -> pd.DataFrame:
     """
-    Возвращает DataFrame со всеми строками из листа 'Поездки'.
-    Фильтрация по датам делается в core/report.py.
+    Возвращает DataFrame со всеми записями из листа 'Поездки'.
     """
     sheet = _open_sheet("Поездки")
     records = sheet.get_all_records()
