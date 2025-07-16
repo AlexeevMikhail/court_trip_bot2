@@ -44,7 +44,7 @@ async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     markup = ReplyKeyboardMarkup(
         buttons,
         resize_keyboard=True,
-        one_time_keyboard=True  # клавиатура скроется после выбора
+        one_time_keyboard=True
     )
 
     await update.message.reply_text(
@@ -52,16 +52,48 @@ async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=markup
     )
 
+async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ручного ввода организации (для 'Другой')."""
+    user_id = update.effective_user.id
+    org_name = update.message.text.strip()
+    if not org_name or not is_registered(user_id):
+        return await update.message.reply_text("❌ Некорректная организация или вы не зарегистрированы.")
+
+    success = save_trip_start(user_id, "other", org_name)
+    now = get_now()
+    time_now = now.strftime("%H:%M")
+
+    if not success:
+        return await update.message.reply_text("❌ У вас уже есть незавершённая поездка.")
+
+    conn = sqlite3.connect("court_tracking.db")
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
+    )
+    full_name = cur.fetchone()[0]
+    conn.close()
+
+    # Записываем старт в Google Sheets
+    try:
+        add_trip(full_name, org_name, now)
+    except Exception as e:
+        print(f"[Google Sheets] Ошибка добавления старта: {e}")
+
+    await update.message.reply_text(
+        f"🚀 Поездка в *{org_name}* начата в _{time_now}_",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
 async def handle_trip_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Обработка выбора одной из предустановленных организаций
-    (нажатие по кнопке меню).
+    Обработка выбора одной из предустановленных организаций (ReplyKeyboard).
     """
     org_name = update.message.text
     user_id = update.effective_user.id
 
     if org_name not in ORGANIZATIONS.values():
-        # если текст не совпал с пунктом меню — игнорируем
         return await update.message.reply_text(
             "❌ Пожалуйста, выберите организацию из предложенного списка."
         )
@@ -73,26 +105,24 @@ async def handle_trip_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not success:
         return await update.message.reply_text("❌ У вас уже есть незавершённая поездка.")
 
-    # Получаем ФИО
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
     ).fetchone()[0]
     conn.close()
 
-    add_trip(full_name, org_name, now)
+    try:
+        add_trip(full_name, org_name, now)
+    except Exception as e:
+        print(f"[Google Sheets] Ошибка добавления старта: {e}")
 
-    # После выбора скрываем клавиатуру
     await update.message.reply_text(
-        f"🚌 Поездка в *{org_name}* начата в _{time_now}_",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardRemove()
+        f"🚌 Поездка в *{org_name}* начата в _{time_time}_",
+        parse_mode="Markdown"
     )
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Завершение поездки (через кнопку меню «Возврат» или команду /return).
-    """
+    """Завершение поездки (через кнопку меню или команду /return)."""
     user_id = update.effective_user.id
     now = get_now()
 
@@ -116,7 +146,10 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         full_name, org_name, start_dt = cur.fetchone()
         conn.close()
 
-        await end_trip_in_sheet(full_name, org_name, start_dt, now, now - start_dt)
+        try:
+            await end_trip_in_sheet(full_name, org_name, start_dt, now, now - start_dt)
+        except Exception as e:
+            print(f"[Google Sheets] Ошибка при закрытии поездки: {e}")
 
         await update.message.reply_text(
             f"🏁 Поездка в *{org_name}* завершена в _{now.strftime('%H:%M')}_",
