@@ -1,11 +1,12 @@
-# trip.py
+# core/trip.py
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from utils.database import is_registered, save_trip_start, get_now
-from core.sheets import add_trip, end_trip_in_sheet   # ← дописали
+from core.sheets import add_trip, end_trip_in_sheet
 import sqlite3
 
+# Словарь организаций
 ORGANIZATIONS = {
     'kuzminsky': "Кузьминский районный суд",
     'lefortovsky': "Лефортовский районный суд",
@@ -32,13 +33,20 @@ ORGANIZATIONS = {
 }
 
 async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    """
+    Стартуем inline‑меню выбора организации.
+    """
+    query = update.callback_query
+    if query:
+        await query.answer()
+        target = query
+    else:
+        target = update.message
 
+    user_id = (query or update.message).from_user.id
     if not is_registered(user_id):
-        return await update.message.reply_text(
-            "❌ Вы не зарегистрированы!\n"
-            "Отправьте команду: `/register Иванов Иван`",
-            parse_mode="Markdown"
+        return await target.reply_text(
+            "❌ Вы не зарегистрированы!\nОтправьте команду: /register Иванов Иван"
         )
 
     keyboard = [
@@ -46,87 +54,99 @@ async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for org_id, name in ORGANIZATIONS.items()
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "🚗 *Куда вы отправляетесь?*\n"
-        "Пожалуйста, выберите организацию ниже:",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
+    await target.reply_text(
+        "🚗 *Куда вы отправляетесь?*\nВыберите организацию:",
+        parse_mode="Markdown",
+        reply_markup=reply_markup
     )
 
-async def handle_trip_save(update: Update, context, org_id: str, org_name: str):
-    """Обработка выбора готовой организации (inline‑кнопки)."""
+async def handle_trip_save(update: Update, context: ContextTypes.DEFAULT_TYPE, org_id: str, org_name: str):
+    """
+    Обрабатываем выбор организации из inline‑кнопок.
+    """
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
 
     success = save_trip_start(user_id, org_id, org_name)
     now = get_now()
-    time_now = now.strftime('%H:%M')
+    time_now = now.strftime("%H:%M")
 
-    if success:
-        # в SQLite уже сохранено, теперь пишем старт в Sheets
-        add_trip(
-            full_name := sqlite3.connect("court_tracking.db")
-                               .execute("SELECT full_name FROM employees WHERE user_id=?", (user_id,))
-                               .fetchone()[0],
-            org_name,
-            now
+    if not success:
+        return await query.edit_message_text(
+            "❌ У вас уже есть незавершённая поездка."
         )
-        await query.edit_message_text(
-            f"🚌 Поездка в *{org_name}* начата в *{time_now}*\nХорошей дороги! 🚗",
-            parse_mode="Markdown"
+
+    # Получаем полное имя из SQLite
+    conn = sqlite3.connect("court_tracking.db")
+    full_name = conn.execute(
+        "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
+    ).fetchone()[0]
+    conn.close()
+
+    # Пишем старт в Google Sheets
+    try:
+        add_trip(full_name, org_name, now)
+    except Exception as e:
+        print(f"[Google Sheets] Ошибка при записи старта: {e}")
+
+    # Предлагаем завершение
+    await query.edit_message_text(
+        f"🚌 Поездка в *{org_name}* начата в *{time_now}*\nХорошей дороги! 🚗",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🏁 Завершить поездку", callback_data="end_trip")]]
         )
-    else:
-        await query.edit_message_text(
-            "❌ *Не удалось начать поездку.*\nВозможно, вы уже в пути.",
-            parse_mode="Markdown"
-        )
+    )
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатия ‘Завершить поездку’."""
+    """
+    Завершаем поездку и записываем конец и длительность в Google Sheets.
+    """
     query = update.callback_query
     if query:
         await query.answer()
-        target = query
         user_id = query.from_user.id
+        target = query
     else:
-        target = update.message
         user_id = update.message.from_user.id
+        target = update.message
 
     now = get_now()
-
-    conn = sqlite3.connect('court_tracking.db')
+    conn = sqlite3.connect("court_tracking.db")
     cur = conn.cursor()
-    cur.execute('''
-        UPDATE trips 
-        SET end_datetime = ?, status = 'completed'
-        WHERE user_id = ? AND status = 'in_progress'
-    ''', (now, user_id))
+    cur.execute(
+        "UPDATE trips SET end_datetime = ?, status = 'completed' "
+        "WHERE user_id = ? AND status = 'in_progress'",
+        (now, user_id)
+    )
     updated = cur.rowcount
     conn.commit()
 
     if updated:
-        # достаём данные, чтобы записать в Sheets
-        cur.execute('''
-            SELECT full_name, org_name, start_datetime 
-            FROM trips 
-            WHERE user_id=? AND status='completed'
-            ORDER BY start_datetime DESC LIMIT 1
-        ''', (user_id,))
+        # Достаём данные последней завершённой поездки
+        cur.execute(
+            "SELECT full_name, org_name, start_datetime FROM trips "
+            "WHERE user_id = ? AND status = 'completed' "
+            "ORDER BY start_datetime DESC LIMIT 1",
+            (user_id,)
+        )
         full_name, org_name, start_dt = cur.fetchone()
         conn.close()
 
-        # ЗАПИСЫВАЕМ В SHEETS окончание и длительность
-        await end_trip_in_sheet(full_name, org_name, start_dt, now, now - start_dt)
+        # Записываем окончание в Google Sheets
+        try:
+            await end_trip_in_sheet(full_name, org_name, start_dt, now, now - start_dt)
+        except Exception as e:
+            print(f"[Google Sheets] Ошибка при записи окончания поездки: {e}")
 
-        await target.reply_text(
-            f"🏁 Вы успешно вернулись в офис!\n"
-            f"Поездка завершена в *{now.strftime('%H:%M')}*",
-            parse_mode="Markdown"
-        )
+        text = f"🏁 Поездка в *{org_name}* завершена в *{now.strftime('%H:%M')}*"
     else:
         conn.close()
-        await target.reply_text(
-            "⚠️ *У вас нет активной поездки*",
-            parse_mode="Markdown"
-        )
+        text = "⚠️ У вас нет активной поездки."
+
+    # Отправляем сообщение (inline‑edit или новый)
+    if query:
+        await query.edit_message_text(text, parse_mode="Markdown")
+    else:
+        await target.reply_text(text, parse_mode="Markdown")
