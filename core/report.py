@@ -29,7 +29,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if df.empty:
         return await update.message.reply_text("📭 Данных нет.")
 
-    # приводим колонку «Дата» к datetime
+    # приводим «Дата» к datetime и отфильтровываем по диапазону
     df["Дата"] = pd.to_datetime(df["Дата"], dayfirst=True, format="%d.%m.%Y", errors="coerce")
     if start_date:
         df = df[df["Дата"] >= start_date]
@@ -51,12 +51,15 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if delta.total_seconds() < 0:
             delta += pd.Timedelta(days=1)
         h, rem = divmod(int(delta.total_seconds()), 3600)
-        m, _   = divmod(rem, 60)
+        m, _ = divmod(rem, 60)
         return f"{h:02d}:{m:02d}"
 
     df["Продолжительность"] = df.apply(calc_duration, axis=1)
 
-    # формируем итоговую таблицу
+    # Конвертируем «Дата» в строку формата dd.mm.yyyy
+    df["Дата"] = df["Дата"].dt.strftime("%d.%m.%Y")
+
+    # Формируем итоговую таблицу
     final = df[[
         "ФИО",
         "Организация",
@@ -66,25 +69,18 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Продолжительность"
     ]]
 
+    # Пишем в Excel
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         final.to_excel(writer, index=False, sheet_name="Отчёт")
-        wb  = writer.book
-        ws  = writer.sheets["Отчёт"]
-
-        # создаём формат для даты dd.mm.yyyy
-        date_fmt = wb.add_format({'num_format': 'dd.mm.yyyy'})
-
+        ws = writer.sheets["Отчёт"]
+        # Подгоняем ширину столбцов
         for idx, col in enumerate(final.columns):
-            # вычисляем ширину столбца
             width = max(final[col].astype(str).map(len).max(), len(col)) + 2
-            if col == "Дата":
-                # применяем формат даты
-                ws.set_column(idx, idx, width, date_fmt)
-            else:
-                ws.set_column(idx, idx, width)
-
+            ws.set_column(idx, idx, width)
     buf.seek(0)
+
+    # Имя файла
     fname = f"report_{datetime.now().strftime('%d%m%Y_%H%M')}.xlsx"
     await update.message.reply_document(document=buf, filename=fname)
     await update.message.reply_text("📄 Готово.")
