@@ -16,7 +16,6 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("🚫 У вас нет прав для отчёта.")
 
     args = context.args
-    # парсим даты, если указаны
     start_date = end_date = None
     try:
         if len(args) >= 1:
@@ -40,7 +39,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if df.empty:
         return await update.message.reply_text("📭 Данных за указанный период нет.")
 
-    # рассчитываем продолжительность, если её не было
+    # рассчитываем продолжительность
     def calc_duration(r):
         s, e = r["Начало поездки"], r["Конец поездки"]
         try:
@@ -57,17 +56,35 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     df["Продолжительность"] = df.apply(calc_duration, axis=1)
 
-    # формируем файл Excel
-    final = df[["ФИО","Организация","Дата","Начало поездки","Конец поездки","Продолжительность"]]
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
-        final.to_excel(w, index=False, sheet_name="Отчёт")
-        ws = w.sheets["Отчёт"]
-        for i, col in enumerate(final.columns):
-            width = max(final[col].astype(str).map(len).max(), len(col)) + 2
-            ws.set_column(i, i, width)
-    buf.seek(0)
+    # формируем итоговую таблицу
+    final = df[[
+        "ФИО",
+        "Организация",
+        "Дата",
+        "Начало поездки",
+        "Конец поездки",
+        "Продолжительность"
+    ]]
 
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        final.to_excel(writer, index=False, sheet_name="Отчёт")
+        wb  = writer.book
+        ws  = writer.sheets["Отчёт"]
+
+        # создаём формат для даты dd.mm.yyyy
+        date_fmt = wb.add_format({'num_format': 'dd.mm.yyyy'})
+
+        for idx, col in enumerate(final.columns):
+            # вычисляем ширину столбца
+            width = max(final[col].astype(str).map(len).max(), len(col)) + 2
+            if col == "Дата":
+                # применяем формат даты
+                ws.set_column(idx, idx, width, date_fmt)
+            else:
+                ws.set_column(idx, idx, width)
+
+    buf.seek(0)
     fname = f"report_{datetime.now().strftime('%d%m%Y_%H%M')}.xlsx"
     await update.message.reply_document(document=buf, filename=fname)
     await update.message.reply_text("📄 Готово.")
