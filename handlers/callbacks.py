@@ -2,14 +2,15 @@
 
 from telegram import Update
 from telegram.ext import ContextTypes, CallbackQueryHandler
+
 from core.trip import (
     start_trip,
-    handle_trip_save,
+    handle_org_selection,      # функция обработки выбора организации
     handle_custom_org_input,
     end_trip,
     ORGANIZATIONS
 )
-from core.calendar import handle_plan_org  # импорт нового callback для планирования
+from core.calendar import handle_plan_org  # импорт для планирования
 
 async def handle_organization_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -18,20 +19,20 @@ async def handle_organization_callback(update: Update, context: ContextTypes.DEF
     org_name = ORGANIZATIONS.get(org_id, "Неизвестная организация")
 
     if org_id == "other":
+        # при выборе «Другая организация» ждём ввод текста
         context.user_data["awaiting_custom_org"] = True
         await query.edit_message_text("✏️ Введите название организации вручную:")
     else:
-        await handle_trip_save(update, context, org_id, org_name)
+        # для всех остальных — обрабатываем выбор через core.trip
+        await handle_org_selection(update, context)
 
 async def handle_end_trip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await end_trip(update, context)
 
-# Callback для кнопки планирования поездки
 async def handle_plan_org_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # просто перенаправляем в логику планирования
     await handle_plan_org(update, context)
 
-# Регистрируем callback‑хендлеры
+# Регистрируем inline‑хендлеры
 organization_callback = CallbackQueryHandler(
     handle_organization_callback,
     pattern=r"^org_"

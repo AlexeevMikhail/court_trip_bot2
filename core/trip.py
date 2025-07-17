@@ -6,7 +6,7 @@ import sqlite3
 from utils.database import is_registered, save_trip_start, get_now
 from core.sheets import add_trip, end_trip_in_sheet
 
-# Словарь организаций
+# Список организаций
 ORGANIZATIONS = {
     'kuzminsky':       "Кузьминский районный суд",
     'lefortovsky':     "Лефортовский районный суд",
@@ -34,73 +34,79 @@ ORGANIZATIONS = {
 
 async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Начало поездки: показывает inline‑кнопки со списком судов.
+    /trip или кнопка «🚀 Поездка»: показываем inline‑кнопки со списком судов.
     """
-    query = update.callback_query
-    target = query or update.message
-    if query:
-        await query.answer()
-    user_id = target.from_user.id
-
+    msg = update.message
+    user_id = msg.from_user.id
     if not is_registered(user_id):
-        return await target.reply_text(
-            "❌ Вы не зарегистрированы! Отправьте /register Иванов Иван"
+        return await msg.reply_text(
+            "❌ Вы не зарегистрированы!\n"
+            "Отправьте команду /register Иванов Иван"
         )
 
     keyboard = [
         [InlineKeyboardButton(name, callback_data=f"org_{org_id}")]
         for org_id, name in ORGANIZATIONS.items()
     ]
-    await target.reply_text(
+    await msg.reply_text(
         "🚗 *Куда вы отправляетесь?*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def handle_trip_save(update: Update, context: ContextTypes.DEFAULT_TYPE, org_id: str, org_name: str):
+async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Сохранение начала поездки после выбора inline‑кнопки.
-    Записывает в SQLite и Google Sheets.
+    Обрабатываем нажатие inline‑кнопки org_<id>.
+    Если id=='other' — просим ввести текст.
+    Иначе сохраняем старт поездки.
     """
     query = update.callback_query
     await query.answer()
+    org_id = query.data.split("_", 1)[1]
+
+    # Случай «Другая организация»
+    if org_id == "other":
+        context.user_data["awaiting_custom_org"] = True
+        return await query.edit_message_text("✏️ Введите название организации вручную:")
+
+    org_name = ORGANIZATIONS[org_id]
     user_id = query.from_user.id
 
-    # Сохраняем старт в локальной БД
+    # 1) Локальный статус
     if not save_trip_start(user_id, org_id, org_name):
         return await query.edit_message_text("❌ У вас уже есть незавершённая поездка.")
 
     now = get_now()
     time_str = now.strftime("%H:%M")
 
-    # Получаем ФИО из employees
+    # 2) ФИО из SQLite
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
     ).fetchone()[0]
     conn.close()
 
-    # Записываем старт в Google Sheets
+    # 3) Запись старта в Google Sheets
     try:
         add_trip(full_name, org_name, now)
     except Exception as e:
-        print(f"[Google Sheets] Ошибка записи старта: {e}")
+        print(f"[Google Sheets] Ошибка записи старта: {e}")
 
-    # Сообщаем пользователю
+    # 4) Оповещаем
     await query.edit_message_text(
-        f"🚌 Поездка в *{org_name}* начата в *{time_str}*.",
+        f"🚌 Поездка в *{org_name}* начата в *{time_str}*",
         parse_mode="Markdown"
     )
 
 async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Обработка ручного ввода названия организации (для org_id='other').
+    Обрабатываем текстовый ввод после «Другая организация».
+    Сохраняем поездку со введённым org_name.
     """
-    # Ожидаемая подсказка выставляется в callbacks
     if not context.user_data.get("awaiting_custom_org"):
         return
+    context.user_data.pop("awaiting_custom_org")
 
-    context.user_data.pop("awaiting_custom_org", None)
     user_id = update.message.from_user.id
     org_name = update.message.text.strip()
 
@@ -119,7 +125,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     try:
         add_trip(full_name, org_name, now)
     except Exception as e:
-        print(f"[Google Sheets] Ошибка записи старта: {e}")
+        print(f"[Google Sheets] Ошибка записи старта: {e}")
 
     await update.message.reply_text(
         f"🚀 Поездка в *{org_name}* начата в *{time_str}*",
@@ -128,22 +134,23 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Завершение поездки: помечает в SQLite и записывает конец + длительность в Google Sheets.
-    Может вызываться как callback_query или как текстовая команда/кнопка меню.
+    /return или кнопка «🏦 Возврат»: завершаем поездку,
+    пишем конец и длительность в Google Sheets и сообщаем в чат.
     """
-    query = update.callback_query
-    target = query or update.message
-    if query:
-        await query.answer()
-        user_id = query.from_user.id
+    # Поддерживаем callback_query и обычное сообщение
+    if update.callback_query:
+        await update.callback_query.answer()
+        user_id = update.callback_query.from_user.id
+        target = update.callback_query
     else:
         user_id = update.message.from_user.id
+        target = update.message
 
     now = get_now()
     conn = sqlite3.connect("court_tracking.db")
     cur = conn.cursor()
 
-    # Обновляем запись путешествия
+    # 1) Обновляем статус
     cur.execute(
         "UPDATE trips SET end_datetime = ?, status = 'completed' "
         "WHERE user_id = ? AND status = 'in_progress'",
@@ -153,33 +160,32 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         conn.close()
         return await target.reply_text("⚠️ У вас нет активной поездки.")
-
     conn.commit()
 
-    # Получаем данные поездки
+    # 2) Достаём org_name и старт
     cur.execute(
-        "SELECT org_name, start_datetime FROM trips "
+        "SELECT organization_name, start_datetime FROM trips "
         "WHERE user_id = ? AND status = 'completed' "
         "ORDER BY start_datetime DESC LIMIT 1",
         (user_id,)
     )
     org_name, start_dt = cur.fetchone()
 
+    # 3) Достаём ФИО
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
     ).fetchone()[0]
     conn.close()
 
-    # Записываем окончание и длительность
+    # 4) Записываем конец и длительность
     try:
         await end_trip_in_sheet(full_name, org_name, start_dt, now, now - start_dt)
     except Exception as e:
-        print(f"[Google Sheets] Ошибка записи окончания: {e}")
+        print(f"[Google Sheets] Ошибка записи окончания: {e}")
 
+    # 5) Сообщаем
     time_str = now.strftime("%H:%M")
-    text = f"🏁 Поездка в *{org_name}* завершена в *{time_str}*"
-
-    if query:
-        await query.edit_message_text(text, parse_mode="Markdown")
-    else:
-        await target.reply_text(text, parse_mode="Markdown")
+    await target.reply_text(
+        f"🏁 Поездка в *{org_name}* завершена в *{time_str}*",
+        parse_mode="Markdown"
+    )
