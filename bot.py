@@ -1,11 +1,27 @@
 # bot.py
+
 import os
 import time
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
-from handlers.commands import register_command, trip_command, return_command, report_command
-from handlers.callbacks import organization_callback
-from handlers.menu import handle_main_menu
 from dotenv import load_dotenv
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters
+)
+from handlers.commands import (
+    register_command,
+    trip_command,
+    return_command,
+    report_command
+)
+from handlers.callbacks import (
+    organization_callback,
+    end_trip_callback,
+    plan_org_callback
+)
+from handlers.menu import handle_main_menu
 from keep_alive import keep_alive
 from scheduler import start_scheduler
 
@@ -24,8 +40,6 @@ async def on_startup(app):
     print("🟢 Бот успешно запущен (вебхук удалён, polling готов)")
 
 def main():
-    # init_db() — отключено, если не используете БД на данный момент
-
     app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -34,18 +48,25 @@ def main():
         .build()
     )
 
-    # регистрируем все ваши хэндлеры
-    app.add_handler(register_command)
-    app.add_handler(trip_command)
-    app.add_handler(return_command)
-    app.add_handler(report_command)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu))
-    app.add_handler(organization_callback)
+    # Регистрация CommandHandler'ов
+    app.add_handler(register_command)   # /register
+    app.add_handler(trip_command)       # /trip или команда для старта поездки
+    app.add_handler(return_command)     # /return или команда для завершения
+    app.add_handler(report_command)     # /report
 
+    # Роутинг по тексту из главного меню
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu))
+
+    # Обработчики inline‑кнопок
+    app.add_handler(organization_callback)   # выбор суда для поездки
+    app.add_handler(end_trip_callback)       # inline callback "end_trip"
+    app.add_handler(plan_org_callback)       # inline callback "plan_org_*"
+
+    # Запускаем планировщик (если нужен)
     start_scheduler()
 
     print("⏳ Запуск polling...")
-    app.run_polling(drop_pending_updates=True, allowed_updates=["message","callback_query"])
+    app.run_polling(drop_pending_updates=True, allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
     try:

@@ -9,6 +9,7 @@ from core.trip import (
     end_trip,
     ORGANIZATIONS
 )
+from core.calendar import handle_plan_org  # импорт нового callback для планирования
 
 async def handle_organization_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -25,7 +26,12 @@ async def handle_organization_callback(update: Update, context: ContextTypes.DEF
 async def handle_end_trip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await end_trip(update, context)
 
-# Регистрируем два колбэка
+# Callback для кнопки планирования поездки
+async def handle_plan_org_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # просто перенаправляем в логику планирования
+    await handle_plan_org(update, context)
+
+# Регистрируем callback‑хендлеры
 organization_callback = CallbackQueryHandler(
     handle_organization_callback,
     pattern=r"^org_"
@@ -33,4 +39,8 @@ organization_callback = CallbackQueryHandler(
 end_trip_callback = CallbackQueryHandler(
     handle_end_trip_callback,
     pattern=r"^end_trip$"
+)
+plan_org_callback = CallbackQueryHandler(
+    handle_plan_org_callback,
+    pattern=r"^plan_org_"
 )
