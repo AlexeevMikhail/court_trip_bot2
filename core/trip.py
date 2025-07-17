@@ -1,7 +1,6 @@
 # core/trip.py
 
 import sqlite3
-from datetime import timedelta
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
@@ -67,7 +66,7 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data["awaiting_custom_org"] = True
         print(f"[trip] user {user_id} will input custom organization")
         return await query.edit_message_text(
-            ✏️ Введите название организации вручную:"
+            "✏️ Введите название организации вручную:"
         )
 
     org_name = ORGANIZATIONS.get(org_id, org_id)
@@ -90,7 +89,7 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     conn.close()
     print(f"[trip] fetched full_name='{full_name}'")
 
-    # Запись старта в Google Sheets
+    # Запись старта в Google Sheets
     try:
         print(f"[trip] calling add_trip({full_name}, {org_name}, {now})")
         add_trip(full_name, org_name, now)
