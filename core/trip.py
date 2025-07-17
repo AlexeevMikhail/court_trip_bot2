@@ -66,7 +66,9 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     if org_id == "other":
         context.user_data["awaiting_custom_org"] = True
         print(f"[trip] user {user_id} will input custom organization")
-        return await query.edit_message_text(✏️ Введите название организации вручную:")
+        return await query.edit_message_text(
+            ✏️ Введите название организации вручную:"
+        )
 
     org_name = ORGANIZATIONS.get(org_id, org_id)
     print(f"[trip] user {user_id} selected organization '{org_name}'")
@@ -75,6 +77,7 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     if not save_trip_start(user_id, org_id, org_name):
         print(f"[trip] save_trip_start returned False for user {user_id}")
         return await query.edit_message_text("❌ У вас уже есть незавершённая поездка.")
+
     now = get_now()
     time_str = now.strftime("%H:%M")
     print(f"[trip] save_trip_start succeeded, now={now}")
@@ -87,7 +90,7 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     conn.close()
     print(f"[trip] fetched full_name='{full_name}'")
 
-    # Запись старта в Google Sheets
+    # Запись старта в Google Sheets
     try:
         print(f"[trip] calling add_trip({full_name}, {org_name}, {now})")
         add_trip(full_name, org_name, now)
@@ -105,7 +108,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     user_id = update.message.from_user.id
     if not context.user_data.get("awaiting_custom_org"):
         return
-    context.user_data.pop("awaiting_custom_org")
+    context.user_data.pop("awaiting_custom_org", None)
     org_name = update.message.text.strip()
     print(f"[trip] handle_custom_org_input: user={user_id}, org_name='{org_name}'")
 
@@ -187,7 +190,7 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     print(f"[trip] fetched full_name='{full_name}' from employees")
 
-    # Логируем заголовки и записи в листе «Поездки»
+    # Записываем конец и длительность
     try:
         print("[trip] calling end_trip_in_sheet...")
         await end_trip_in_sheet(full_name, org_name, start_dt, now, now - start_dt)
@@ -195,7 +198,7 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"[trip][ERROR] end_trip_in_sheet failed: {e}")
 
-    # Окончательное сообщение
+    # Отправляем сообщение о завершении
     time_str = now.strftime("%H:%M")
     msg = f"🏁 Поездка в *{org_name}* завершена в *{time_str}*"
     print(f"[trip] sending completion message: {msg}")
