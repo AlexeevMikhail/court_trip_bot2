@@ -62,7 +62,7 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     if org_id == "other":
         context.user_data["awaiting_custom_org"] = True
         return await query.edit_message_text(
-            ✏️ Введите название организации вручную:"
+            "✏️ Введите название организации вручную:"
         )
 
     org_name = ORGANIZATIONS.get(org_id, org_id)
