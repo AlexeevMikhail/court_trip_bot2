@@ -31,9 +31,11 @@ async def handle_plan_org(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     org_id = query.data.split("_", 2)[2]
 
-    # если выбрали «Другая организация»
+    # если выбрали «Другая организация» — просим сначала название, затем дату/время
     if org_id == "other":
         context.user_data["awaiting_custom_plan_org"] = True
+        # чтобы следующий ввод текстом попал в handle_plan_datetime
+        context.user_data["awaiting_plan_datetime"] = True
         await query.edit_message_text("✏️ Введите название организации для планирования:")
         return
 
@@ -48,12 +50,12 @@ async def handle_plan_org(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_plan_datetime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # этап 1: ввод названия организации
+    # этап 1: ввод названия организации (для custom)
     if context.user_data.get("awaiting_custom_plan_org"):
         org_name = update.message.text.strip()
         context.user_data.pop("awaiting_custom_plan_org", None)
         context.user_data["plan_org_name"] = org_name
-        context.user_data["awaiting_plan_datetime"] = True
+        # теперь просим дату/время
         return await update.message.reply_text(
             "✏️ Теперь введите дату и время в формате `ДД.MM.ГГГГ ЧЧ:ММ` "
             "или `ДД.MM.ГГГГ` (для «Весь день»):",
@@ -90,7 +92,7 @@ async def handle_plan_datetime(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         add_plan(full_name, org_name, plan_date, plan_time)
     except Exception as e:
-        print(f"[Google Sheets] Ошибка при записи в календарь: {e}")
+        print(f"[Google Sheets] Ошибка при записи в Календарь: {e}")
         return await update.message.reply_text("❌ Не удалось записать в Календарь.")
 
     # сброс состояний
