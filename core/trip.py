@@ -5,7 +5,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
-from utils.database import is_registered, save_trip_start, get_now, get_debug_mode
+from utils.database import is_registered, save_trip_start, get_now, end_trip as end_local
 from core.sheets import add_trip, end_trip_in_sheet
 
 # Список организаций
@@ -14,7 +14,7 @@ ORGANIZATIONS = {
     'lefortovsky':     "Лефортовский районный суд",
     'lyublinsky':      "Люблинский районный суд",
     'meshchansky':     "Мещанский районный суд",
-    'nagatinsky':      "Нагатинский районный суд",
+    'nagatinsky':      "Нagatинский районный суд",
     'perovsky':        "Перовский районный суд",
     'shcherbinsky':    "Щербинский районный суд",
     'tverskoy':        "Тверской районный суд",
@@ -57,44 +57,34 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    org_id  = query.data.split("_", 1)[1]
+    org_id = query.data.split("_", 1)[1]
 
     if org_id == "other":
         context.user_data["awaiting_custom_org"] = True
-        return await query.edit_message_text("✏️ Введите название организации вручную:")
-
-    org_name = ORGANIZATIONS.get(org_id, org_id)
-
-    # сохраняем поездку в БД (с учётом DEBUG_MODE и рамок рабочего дня)
-    if not save_trip_start(user_id, org_id, org_name):
         return await query.edit_message_text(
-            "❌ У вас уже есть незавершённая поездка или сейчас вне рабочего времени."
+            "✏️ Введите название организации вручную:"
         )
 
-    # после успешного save_trip_start — вытягиваем именно ту дату/время, что в БД
-    conn = sqlite3.connect("court_tracking.db")
-    row  = conn.execute(
-        "SELECT start_datetime FROM trips WHERE user_id = ? AND status = 'in_progress' ORDER BY start_datetime DESC LIMIT 1",
-        (user_id,)
-    ).fetchone()
-    conn.close()
-    start_dt = row[0]
-    # если в БД хранится строка
-    if isinstance(start_dt, str):
-        start_dt = datetime.fromisoformat(start_dt)
+    org_name = ORGANIZATIONS.get(org_id, org_id)
+    # Сохраняем старт поездки
+    if not save_trip_start(user_id, org_id, org_name):
+        return await query.edit_message_text(
+            "❌ У вас уже есть незавершённая поездка или вне рабочего времени."
+        )
 
-    time_str = start_dt.strftime("%H:%M")
+    now = get_now()
+    time_str = now.strftime("%H:%M")
 
-    # получаем ФИО
+    # Получаем ФИО из локальной БД
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
     ).fetchone()[0]
     conn.close()
 
-    # пишем в Google Sheets
+    # Запись старта в Google Sheets
     try:
-        add_trip(full_name, org_name, start_dt)
+        add_trip(full_name, org_name, now)
     except Exception as e:
         print(f"[trip][ERROR] add_trip failed: {e}")
 
@@ -113,21 +103,11 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
 
     if not save_trip_start(user_id, "other", org_name):
         return await update.message.reply_text(
-            "❌ У вас уже есть незавершённая поездка или сейчас вне рабочего времени."
+            "❌ У вас уже есть незавершённая поездка или вне рабочего времени."
         )
 
-    # вытаскиваем скорректированное время из БД
-    conn = sqlite3.connect("court_tracking.db")
-    row  = conn.execute(
-        "SELECT start_datetime FROM trips WHERE user_id = ? AND status = 'in_progress' ORDER BY start_datetime DESC LIMIT 1",
-        (user_id,)
-    ).fetchone()
-    conn.close()
-    start_dt = row[0]
-    if isinstance(start_dt, str):
-        start_dt = datetime.fromisoformat(start_dt)
-
-    time_str = start_dt.strftime("%H:%M")
+    now = get_now()
+    time_str = now.strftime("%H:%M")
 
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
@@ -136,9 +116,9 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     conn.close()
 
     try:
-        add_trip(full_name, org_name, start_dt)
+        add_trip(full_name, org_name, now)
     except Exception as e:
-        print(f"[trip][ERROR] add_trip(custom) failed: {e}")
+        print(f"[trip][ERROR] add_trip(custom org) failed: {e}")
 
     await update.message.reply_text(
         f"🚌 Поездка в *{org_name}* начата в *{time_str}*",
@@ -147,7 +127,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # обработка как callback_query, так и обычного сообщения
+    # Поддержка callback_query и обычного сообщения
     if update.callback_query:
         query = update.callback_query
         await query.answer()
@@ -157,44 +137,48 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target = update.message
         user_id = update.message.from_user.id
 
-    # пробуем завершить локально
-    from utils.database import end_trip as end_local
-    now = get_now()
+    # Локальное завершение в БД
     if not end_local(user_id):
         return await target.reply_text("⚠️ У вас нет активной поездки.")
 
-    # дёргаем последнюю завершённую запись
+    now = get_now()
+
+    # Читаем из БД только что завершённую поездку
     conn = sqlite3.connect("court_tracking.db")
-    cur  = conn.cursor()
+    cur = conn.cursor()
     cur.execute(
-        "SELECT organization_name, start_datetime FROM trips "
-        "WHERE user_id = ? AND status = 'completed' "
+        "SELECT organization_name, start_datetime "
+        "FROM trips WHERE user_id = ? AND status = 'completed' "
         "ORDER BY start_datetime DESC LIMIT 1",
         (user_id,)
     )
     org_name, start_dt = cur.fetchone()
-    conn.close()
 
+    # Парсим start_dt, если нужно
     if isinstance(start_dt, str):
-        start_dt = datetime.fromisoformat(start_dt)
+        try:
+            start_dt = datetime.fromisoformat(start_dt)
+        except ValueError:
+            start_dt = datetime.strptime(start_dt, "%Y-%m-%d %H:%M:%S")
 
-    # считаем длительность
-    duration = now - start_dt
+    # Если пользователь завершил поездку раньше старта — ставим окончание = старт
+    end_dt = now if now >= start_dt else start_dt
+    duration = end_dt - start_dt
 
-    # ФИО
-    conn = sqlite3.connect("court_tracking.db")
+    # ФИО для Google Sheets
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
     ).fetchone()[0]
     conn.close()
 
-    # записываем в Google Sheets
+    # Запись окончания и длительности в Google Sheets
     try:
-        await end_trip_in_sheet(full_name, org_name, start_dt, now, duration)
+        await end_trip_in_sheet(full_name, org_name, start_dt, end_dt, duration)
     except Exception as e:
         print(f"[trip][ERROR] end_trip_in_sheet failed: {e}")
 
-    time_str = now.strftime("%H:%M")
+    # Отправляем финальное сообщение
+    time_str = end_dt.strftime("%H:%M")
     await target.reply_text(
         f"🏁 Поездка в *{org_name}* завершена в *{time_str}*",
         parse_mode="Markdown"
