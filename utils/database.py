@@ -1,7 +1,7 @@
 import sqlite3
 from datetime import datetime, date, time, timedelta
 
-DEBUG_MODE = True  # False — рабочий режим, True — тестовый
+DEBUG_MODE = False  # False — рабочий режим, True — тестовый
 DB_PATH = 'court_tracking.db'
 
 def get_now() -> datetime:
