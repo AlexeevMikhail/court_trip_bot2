@@ -63,6 +63,7 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     org_id = query.data.split("_", 1)[1]
     print(f"[trip] handle_org_selection: user={user_id}, org_id={org_id}")
 
+    # если «Другая организация»
     if org_id == "other":
         context.user_data["awaiting_custom_org"] = True
         print(f"[trip] awaiting custom org from user {user_id}")
@@ -73,19 +74,20 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     org_name = ORGANIZATIONS.get(org_id, org_id)
     print(f"[trip] resolved org_name = '{org_name}'")
 
-    # Сохраняем старт поездки
+    # сохраняем старт (внутри save_trip_start уже учтены DEBUG_MODE и часы)
     success = save_trip_start(user_id, org_id, org_name)
     print(f"[trip] save_trip_start returned {success}")
     if not success:
+        # либо уже in_progress, либо вне рабочего времени
         return await query.edit_message_text(
-            "❌ У вас уже есть незавершённая поездка или вне рабочего времени."
+            "❌ У вас уже есть незавершённая поездка или вы вне рабочего времени."
         )
 
     now = get_now()
     time_str = now.strftime("%H:%M")
     print(f"[trip] trip start time (get_now) = {now!r}")
 
-    # Получаем ФИО
+    # берём ФИО из БД
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
@@ -93,7 +95,7 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     conn.close()
     print(f"[trip] full_name fetched = '{full_name}'")
 
-    # Запись старта в Google Sheets
+    # пишем в Google Sheets
     try:
         print(f"[trip] calling add_trip({full_name}, {org_name}, {now!r})")
         add_trip(full_name, org_name, now)
@@ -111,7 +113,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     user_id = update.message.from_user.id
     print(f"[trip] handle_custom_org_input triggered by user {user_id}")
     if not context.user_data.get("awaiting_custom_org"):
-        print(f"[trip] unexpected custom input, ignoring")
+        print("[trip] unexpected custom input, ignoring")
         return
     context.user_data.pop("awaiting_custom_org", None)
 
@@ -122,7 +124,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     print(f"[trip] save_trip_start(custom) returned {success}")
     if not success:
         return await update.message.reply_text(
-            "❌ У вас уже есть незавершённая поездка или вне рабочего времени."
+            "❌ У вас уже есть незавершённая поездка или вы вне рабочего времени."
         )
 
     now = get_now()
@@ -150,7 +152,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Поддержка callback_query и message
+    # Поддержка callback_query и текстового «Возврат»
     if update.callback_query:
         query = update.callback_query
         await query.answer()
@@ -168,7 +170,7 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect("court_tracking.db")
     cur = conn.cursor()
 
-    # Обновляем статус
+    # помечаем завершённой текущую
     cur.execute(
         "UPDATE trips SET end_datetime = ?, status = 'completed' "
         "WHERE user_id = ? AND status = 'in_progress'",
@@ -183,9 +185,10 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await target.reply_text("⚠️ У вас нет активной поездки.")
     conn.commit()
 
-    # Достаём организацию и время старта
+    # забираем только что закрытую поездку
     cur.execute(
-        "SELECT organization_name, start_datetime FROM trips "
+        "SELECT organization_name, start_datetime "
+        "FROM trips "
         "WHERE user_id = ? AND status = 'completed' "
         "ORDER BY start_datetime DESC LIMIT 1",
         (user_id,)
@@ -193,7 +196,7 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     org_name, start_dt = cur.fetchone()
     print(f"[trip] fetched org_name = '{org_name}', start_dt raw = {start_dt!r}")
 
-    # Парсим start_dt, если он строка
+    # парсим строку, если надо
     if isinstance(start_dt, str):
         try:
             start_dt = datetime.fromisoformat(start_dt)
@@ -201,26 +204,26 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
             start_dt = datetime.strptime(start_dt, "%Y-%m-%d %H:%M:%S")
         print(f"[trip] parsed start_dt = {start_dt!r}")
 
-    # Достаём ФИО
+    # ФИО
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
     ).fetchone()[0]
     conn.close()
     print(f"[trip] full_name fetched = '{full_name}'")
 
-    # Вычисляем длительность
+    # длительность
     duration = now - start_dt
-    print(f"[trip] computed duration = {duration}")
+    print(f"[trip] computed duration = {duration!r}")
 
-    # Записываем конец и длительность в Google Sheets
+    # пишем в Google Sheets
     try:
-        print(f"[trip] calling end_trip_in_sheet({full_name}, {org_name}, {start_dt!r}, {now!r}, {duration})")
+        print(f"[trip] calling end_trip_in_sheet({full_name}, {org_name}, {start_dt!r}, {now!r}, {duration!r})")
         await end_trip_in_sheet(full_name, org_name, start_dt, now, duration)
         print("[trip] end_trip_in_sheet succeeded")
     except Exception as e:
         print(f"[trip][ERROR] end_trip_in_sheet failed: {e}")
 
-    # Отправляем сообщение о завершении
+    # уведомляем юзера
     time_str = now.strftime("%H:%M")
     await target.reply_text(
         f"🏁 Поездка в *{org_name}* завершена в *{time_str}*",
