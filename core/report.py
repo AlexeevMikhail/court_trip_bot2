@@ -15,8 +15,11 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ADMIN_IDS:
         return await update.message.reply_text("🚫 У вас нет прав для отчёта.")
 
-    args = context.args
+    # Если context.args равно None (при нажатии кнопки), заменяем на пустой список
+    args = context.args or []
     start_date = end_date = None
+
+    # Если пользователь указал даты вручную — парсим
     try:
         if len(args) >= 1:
             start_date = datetime.strptime(args[0], "%d.%m.%Y")
@@ -56,7 +59,7 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     df["Продолжительность"] = df.apply(calc_duration, axis=1)
 
-    # Конвертируем «Дата» в строку формата dd.mm.yyyy
+    # Преобразуем дату в строку dd.mm.YYYY
     df["Дата"] = df["Дата"].dt.strftime("%d.%m.%Y")
 
     # Формируем итоговую таблицу
@@ -69,18 +72,17 @@ async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Продолжительность"
     ]]
 
-    # Пишем в Excel
+    # Записываем в Excel
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         final.to_excel(writer, index=False, sheet_name="Отчёт")
         ws = writer.sheets["Отчёт"]
-        # Подгоняем ширину столбцов
         for idx, col in enumerate(final.columns):
             width = max(final[col].astype(str).map(len).max(), len(col)) + 2
             ws.set_column(idx, idx, width)
     buf.seek(0)
 
-    # Имя файла
+    # Отправляем файл отчёта за весь период или указанный пользователем
     fname = f"report_{datetime.now().strftime('%d%m%Y_%H%M')}.xlsx"
     await update.message.reply_document(document=buf, filename=fname)
     await update.message.reply_text("📄 Готово.")

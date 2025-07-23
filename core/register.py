@@ -1,33 +1,56 @@
+# core/register.py
+
+import sqlite3
 from telegram import Update
 from telegram.ext import ContextTypes
-import sqlite3
-from core.sheets import add_user  # 👈 Правильное имя функции из sheets.py
+from core.sheets import add_user
+
+DB = "court_tracking.db"
 
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    username = update.effective_user.username or ""
     args = context.args
 
-    if not args:
+    # 1) Фаза запроса — без аргументов: просим ФИО и ставим флаг
+    if not args and not context.user_data.get("awaiting_registration"):
+        context.user_data["awaiting_registration"] = True
         await update.message.reply_text(
-            "✏️ *Введите ваше ФИО после команды:*\n`/register Иванов Иван`",
+            "✏️ *Введите Фамилию и Имя*",
             parse_mode="Markdown"
         )
         return
 
-    full_name = ' '.join(args)
-    conn = sqlite3.connect("court_tracking.db")
+    # 2) Фаза приёма ФИО: либо из args (командой), либо из свободного текста
+    if context.user_data.get("awaiting_registration"):
+        full_name = update.message.text.strip()
+        context.user_data.pop("awaiting_registration", None)
+    else:
+        full_name = " ".join(args).strip()
+
+    # Сохраняем в SQLite
+    conn   = sqlite3.connect(DB)
     cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS employees (
+            user_id   INTEGER PRIMARY KEY,
+            full_name TEXT      NOT NULL
+        )
+    """)
+    conn.commit()
 
     try:
-        cursor.execute("INSERT INTO employees (user_id, full_name) VALUES (?, ?)", (user_id, full_name))
+        cursor.execute(
+            "INSERT INTO employees (user_id, full_name) VALUES (?, ?)",
+            (user_id, full_name)
+        )
         conn.commit()
 
-        # 👇 Добавляем запись в Google Sheets
-        add_user(user_id, full_name, username)
+        # Добавляем в Google Sheets
+        add_user(full_name, user_id)
 
+        # Подтверждение
         await update.message.reply_text(
-            f"👤 *Регистрация прошла успешно!*\nДобро пожаловать, *{full_name}* ✅",
+            f"✅ *Регистрация прошла успешно!*\nДобро пожаловать, *{full_name}*!",
             parse_mode="Markdown"
         )
     except sqlite3.IntegrityError:

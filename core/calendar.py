@@ -30,6 +30,14 @@ async def handle_plan_org(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     org_id = query.data.split("_", 2)[2]
+
+    # если выбрали «Другая организация»
+    if org_id == "other":
+        context.user_data["awaiting_custom_plan_org"] = True
+        await query.edit_message_text("✏️ Введите название организации для планирования:")
+        return
+
+    # иначе — сразу сохраняем имя и просим дату/время
     org_name = ORGANIZATIONS.get(org_id, org_id)
     context.user_data["plan_org_name"] = org_name
     context.user_data["awaiting_plan_datetime"] = True
@@ -40,6 +48,19 @@ async def handle_plan_org(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_plan_datetime(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # этап 1: ввод названия организации
+    if context.user_data.get("awaiting_custom_plan_org"):
+        org_name = update.message.text.strip()
+        context.user_data.pop("awaiting_custom_plan_org", None)
+        context.user_data["plan_org_name"] = org_name
+        context.user_data["awaiting_plan_datetime"] = True
+        return await update.message.reply_text(
+            "✏️ Теперь введите дату и время в формате `ДД.MM.ГГГГ ЧЧ:ММ` "
+            "или `ДД.MM.ГГГГ` (для «Весь день»):",
+            parse_mode="Markdown"
+        )
+
+    # этап 2: ввод даты/времени
     if not context.user_data.get("awaiting_plan_datetime"):
         return
     text = update.message.text.strip()
@@ -72,13 +93,12 @@ async def handle_plan_datetime(update: Update, context: ContextTypes.DEFAULT_TYP
         print(f"[Google Sheets] Ошибка при записи в календарь: {e}")
         return await update.message.reply_text("❌ Не удалось записать в Календарь.")
 
-    # сброс состояния
+    # сброс состояний
     context.user_data.pop("awaiting_plan_datetime", None)
     context.user_data.pop("plan_org_name", None)
 
     await update.message.reply_text(
-        f"✅ Запланирована поездка в *{org_name}* "
-        f"на *{plan_date.strftime('%d.%m.%Y')} {plan_time}*",
+        f"✅ Запланирована поездка в *{org_name}* на *{plan_date.strftime('%d.%m.%Y')} {plan_time}*",
         parse_mode="Markdown"
     )
 
