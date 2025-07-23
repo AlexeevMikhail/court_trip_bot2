@@ -68,7 +68,7 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     org_name = ORGANIZATIONS.get(org_id, org_id)
     # Сохраняем старт поездки
     if not save_trip_start(user_id, org_id, org_name):
-        return await query.edit_message_text("❌ У вас уже есть незавершённая поездка.")
+        return await query.edit_message_text("❌ У вас уже есть незавершённая поездка или вне рабочего времени.")
 
     now = get_now()
     time_str = now.strftime("%H:%M")
@@ -100,7 +100,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     org_name = update.message.text.strip()
 
     if not save_trip_start(user_id, "other", org_name):
-        return await update.message.reply_text("❌ У вас уже есть незавершённая поездка.")
+        return await update.message.reply_text("❌ У вас уже есть незавершённая поездка или вне рабочего времени.")
 
     now = get_now()
     time_str = now.strftime("%H:%M")
@@ -117,7 +117,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
         print(f"[trip][ERROR] add_trip(custom org) failed: {e}")
 
     await update.message.reply_text(
-        f"🚀 Поездка в *{org_name}* начата в *{time_str}*",
+        f"🚌 Поездка в *{org_name}* начата в *{time_str}*",
         parse_mode="Markdown"
     )
 
