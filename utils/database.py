@@ -1,3 +1,5 @@
+# utils/database.py
+
 import sqlite3
 from datetime import datetime, date, time, timedelta
 
@@ -18,8 +20,8 @@ def init_db():
     # таблица поездок
     cur.execute('''
         CREATE TABLE IF NOT EXISTS trips (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id          INTEGER,
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id           INTEGER,
             organization_id   TEXT,
             organization_name TEXT,
             start_datetime    DATETIME,
@@ -44,19 +46,36 @@ def init_db():
     conn.close()
 
 def get_now() -> datetime:
-    """Текущее время без секунд/микр."""
+    """Текущее время без секунд и микросекунд."""
     return datetime.now().replace(second=0, microsecond=0)
 
 def get_debug_mode() -> bool:
     """True = тестовый режим, False = рабочий."""
     conn = sqlite3.connect(DB_PATH)
-    row  = conn.execute(
-        "SELECT value FROM config WHERE key = 'DEBUG_MODE'"
-    ).fetchone()
+    try:
+        row = conn.execute(
+            "SELECT value FROM config WHERE key = 'DEBUG_MODE'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # Если таблицы config нет, создаём её и ставим default=false
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS config (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        ''')
+        conn.execute('''
+            INSERT OR IGNORE INTO config (key, value)
+            VALUES ('DEBUG_MODE', 'false')
+        ''')
+        conn.commit()
+        conn.close()
+        return False
     conn.close()
     return bool(row and row[0].lower() == 'true')
 
 def is_registered(user_id: int) -> bool:
+    """Проверка, что пользователь в таблице employees."""
     conn = sqlite3.connect(DB_PATH)
     ok   = conn.execute(
         "SELECT 1 FROM employees WHERE user_id = ?", (user_id,)
@@ -66,11 +85,12 @@ def is_registered(user_id: int) -> bool:
 
 def adjust_to_work_hours(dt: datetime) -> datetime | None:
     """
-    Приводим в рамки 09:00–18:00 (без учёта пятницы, там 16:45):
-    - до 09:00 → 09:00
-    - после 18:00 → None
+    Приводит время в рамки 09:00–18:00:
+      - до 09:00 → 09:00
+      - после 18:00 → None
+    Выходные (сб, вс) тоже считаются вне рабочих часов.
     """
-    if dt.weekday() >= 5:
+    if dt.weekday() >= 5:  # 5=суббота, 6=воскресенье
         return None
     if dt.time() < WORKDAY_START:
         return datetime.combine(dt.date(), WORKDAY_START)
@@ -80,11 +100,12 @@ def adjust_to_work_hours(dt: datetime) -> datetime | None:
 
 def save_trip_start(user_id: int, org_id: str, org_name: str) -> bool:
     """
-    Сохраняет поездку. Если DEBUG_MODE=false — применяем рабочие часы.
+    Сохраняет начало поездки в таблицу trips.
+    Если DEBUG_MODE=false (рабочий режим) — применяет ограничения по часам.
     """
     now = get_now()
 
-    # глобальный тестовый режим?
+    # Если рабочий режим — корректируем время
     if not get_debug_mode():
         now = adjust_to_work_hours(now)
         if not now:
@@ -92,7 +113,7 @@ def save_trip_start(user_id: int, org_id: str, org_name: str) -> bool:
 
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
-    # нет ли уже in_progress
+    # проверяем, нет ли уже незавершённой поездки
     cur.execute(
         "SELECT 1 FROM trips WHERE user_id = ? AND status = 'in_progress'",
         (user_id,)
@@ -111,7 +132,9 @@ def save_trip_start(user_id: int, org_id: str, org_name: str) -> bool:
     return True
 
 def end_trip(user_id: int) -> bool:
-    """Завершает in_progress поездку."""
+    """
+    Завершает активную поездку, устанавливая end_datetime и status='completed'.
+    """
     now = get_now()
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
@@ -126,7 +149,10 @@ def end_trip(user_id: int) -> bool:
     return updated > 0
 
 def close_expired_trips():
-    """Автозакрытие по расписанию (Job из scheduler.py)."""
+    """
+    Авто-завершение всех in_progress поездок.
+    Вызывается из scheduler.py по расписанию.
+    """
     now = get_now()
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
@@ -135,7 +161,10 @@ def close_expired_trips():
     count = 0
     for trip_id, start_str in rows:
         start_dt = datetime.fromisoformat(start_str).replace(second=0, microsecond=0)
-        end_dt   = start_dt + timedelta(minutes=1) if now <= start_dt else now
+        if now <= start_dt:
+            end_dt = start_dt + timedelta(minutes=1)
+        else:
+            end_dt = now
         cur.execute(
             "UPDATE trips SET end_datetime = ?, status = 'completed' WHERE id = ?",
             (end_dt, trip_id)
