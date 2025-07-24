@@ -1,3 +1,5 @@
+# core/sheets.py
+
 import os
 import json
 import gspread
@@ -6,14 +8,13 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-# Подгружаем .env
 load_dotenv()
 GOOGLE_SHEETS_JSON = os.getenv("GOOGLE_SHEETS_JSON")
 SPREADSHEET_ID     = os.getenv("SPREADSHEET_ID")
 if not GOOGLE_SHEETS_JSON or not SPREADSHEET_ID:
     raise ValueError("Не заданы GOOGLE_SHEETS_JSON или SPREADSHEET_ID в .env")
 
-# Авторизация в Google Sheets
+# авторизация
 creds_dict = json.loads(GOOGLE_SHEETS_JSON)
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -24,18 +25,11 @@ client = gspread.authorize(creds)
 
 
 def _open_sheet(name: str = None):
-    """
-    Открывает вкладку по названию или первую, если name=None.
-    """
     ss = client.open_by_key(SPREADSHEET_ID)
     return ss.worksheet(name) if name else ss.sheet1
 
 
 def add_user(full_name: str, user_id: int):
-    """
-    Регистрирует нового пользователя в листе 'Пользователи'.
-    Столбцы: A=ФИО, B=Telegram user_id.
-    """
     try:
         sheet = _open_sheet("Пользователи")
     except gspread.exceptions.WorksheetNotFound:
@@ -44,15 +38,14 @@ def add_user(full_name: str, user_id: int):
 
 
 def add_trip(full_name: str, org_name: str, start_dt: datetime):
-    """
-    Добавляет в лист 'Поездки' строку со стартом поездки.
-    """
     sheet = _open_sheet("Поездки")
-    date_str  = start_dt.strftime("%d.%m.%Y")
-    time_str  = start_dt.strftime("%H:%M")
+    date_str = start_dt.strftime("%d.%m.%Y")
+    time_str = start_dt.strftime("%H:%M")
+    sheet.append_row(
+        [full_name, org_name, date_str, time_str, "", ""],
+        value_input_option="USER_ENTERED"
+    )
     print(f"[sheets] add_trip: {full_name}, {org_name}, {date_str} {time_str}")
-    sheet.append_row([full_name, org_name, date_str, time_str, "", ""],
-                     value_input_option="USER_ENTERED")
 
 
 async def end_trip_in_sheet(
@@ -62,67 +55,44 @@ async def end_trip_in_sheet(
     end_dt:     datetime,
     duration:   timedelta
 ):
-    """
-    Находит последнюю незавершённую поездку и дополняет её:
-      E: время окончания, F: продолжительность
-    """
-    sheet   = _open_sheet("Поездки")
+    sheet = _open_sheet("Поездки")
     records = sheet.get_all_records()
     date_str  = start_dt.strftime("%d.%m.%Y")
     start_str = start_dt.strftime("%H:%M")
 
-    # Парсим время старта для сравнения без ведущих нулей
-    try:
-        target_time = start_dt.time()
-    except:
-        target_time = None
-
+    print(f"[sheets] end_trip: ищем строку для {full_name}, {org_name}, {date_str} {start_str}")
     for idx, row in enumerate(records, start=2):
-        fio        = row.get("ФИО", "").strip()
-        org        = row.get("Организация", "").strip()
-        cell_date  = row.get("Дата", "").strip()
-        cell_start = row.get("Начало поездки", "").strip()
-        cell_end   = row.get("Конец поездки", "")
+        # читаем всё как строки и убираем пробелы
+        fio  = str(row.get("ФИО",     "")).strip()
+        org  = str(row.get("Организация","")).strip()
+        dt   = str(row.get("Дата",    "")).strip()
+        st   = str(row.get("Начало поездки","")).strip()
+        et   = str(row.get("Конец поездки","")).strip()
 
-        if fio != full_name or org != org_name or cell_date != date_str:
-            continue
+        print(f"[sheets] row {idx}: ФИО='{fio}', орг='{org}', дата='{dt}', старт='{st}', конец='{et}'")
 
-        # Проверяем время старта — сначала через разбор, иначе точное совпадение
-        match_time = False
-        if target_time:
-            try:
-                parsed = datetime.strptime(cell_start, "%H:%M").time()
-                match_time = (parsed == target_time)
-            except:
-                pass
-        if not match_time and cell_start != start_str:
-            continue
+        if (fio == full_name
+            and org == org_name
+            and dt  == date_str
+            and st  == start_str
+            and et  == ""):
 
-        # Если уже есть время окончания — пропускаем
-        if cell_end and str(cell_end).strip():
-            continue
+            end_str = end_dt.strftime("%H:%M")
+            secs = int(duration.total_seconds())
+            h, rem = divmod(secs, 3600)
+            m, s   = divmod(rem, 60)
+            dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
 
-        # Всё совпало! обновляем
-        end_str = end_dt.strftime("%H:%M")
-        secs = int(duration.total_seconds())
-        h, rem = divmod(secs, 3600)
-        m, s   = divmod(rem, 60)
-        dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
+            sheet.update_cell(idx, 5, end_str)
+            sheet.update_cell(idx, 6, dur_str)
+            print(f"[sheets] end_trip_in_sheet: обновили строку {idx} → конец='{end_str}', длит='{dur_str}'")
+            return
 
-        sheet.update_cell(idx, 5, end_str)
-        sheet.update_cell(idx, 6, dur_str)
-        print(f"[sheets] end_trip_in_sheet: updated row {idx} → end={end_str}, dur={dur_str}")
-        return
-
-    # Если цикл закончился — не нашли
     print(f"[sheets][WARN] Не найдена открытая поездка для "
           f"{full_name}, {org_name} ({date_str} {start_str})")
 
 
 def add_plan(full_name: str, org_name: str, plan_date: datetime.date, plan_time: str):
-    """
-    Добавляет строку в лист 'Календарь' и вставляет её по дате.
-    """
     sheet = _open_sheet("Календарь")
     date_str = plan_date.strftime("%d.%m.%Y")
     rows = sheet.get_all_values()
@@ -138,16 +108,10 @@ def add_plan(full_name: str, org_name: str, plan_date: datetime.date, plan_time:
 
 
 def get_trip_dataframe() -> pd.DataFrame:
-    """
-    Возвращает DataFrame со всеми записями листа 'Поездки'.
-    """
     sheet = _open_sheet("Поездки")
     return pd.DataFrame(sheet.get_all_records())
 
 
 def get_calendar_dataframe() -> pd.DataFrame:
-    """
-    Возвращает DataFrame со всеми записями листа 'Календарь'.
-    """
     sheet = _open_sheet("Календарь")
     return pd.DataFrame(sheet.get_all_records())
