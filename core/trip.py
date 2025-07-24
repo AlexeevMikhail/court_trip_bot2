@@ -9,8 +9,8 @@ from utils.database import (
     is_registered,
     save_trip_start,
     get_now,
-    end_trip_local,        # ← импортируем эту функцию
-    fetch_last_completed   # ← для получения org_name и start_dt
+    end_trip_local,
+    fetch_last_completed,
 )
 from core.sheets import add_trip, end_trip_in_sheet
 
@@ -80,14 +80,14 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     now = get_now()
     time_str = now.strftime("%H:%M")
 
-    # имя пользователя
+    # Получаем ФИО
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
     ).fetchone()[0]
     conn.close()
 
-    # добавляем в Google Sheets
+    # Запись старта в Google Sheets
     try:
         add_trip(full_name, org_name, now)
     except Exception as e:
@@ -132,7 +132,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Поддерживаем как callback_query, так и текстовую команду
+    # Поддержка callback_query и текстовых сообщений
     if update.callback_query:
         query = update.callback_query
         await query.answer()
@@ -140,20 +140,27 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         responder, user_id = update.message, update.message.from_user.id
 
-    # закрываем локально
+    # Завершаем локально и получаем время
     success, end_dt = end_trip_local(user_id)
     if not success:
         return await responder.reply_text("⚠️ У вас нет активной поездки.")
 
-    # получаем org_name и start_dt
+    # Берём последнюю только что закрытую поездку
     org_name, start_dt = fetch_last_completed(user_id)
 
-    # вычисляем длительность
+    # Снова берём full_name для отправки в Google Sheets
+    conn = sqlite3.connect("court_tracking.db")
+    full_name = conn.execute(
+        "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
+    ).fetchone()[0]
+    conn.close()
+
+    # Вычисляем длительность
     duration = end_dt - start_dt
 
-    # отправляем в Google Sheets
+    # Запись конца в Google Sheets
     try:
-        await end_trip_in_sheet(fetch_last_completed(user_id)[0], org_name, start_dt, end_dt, duration)
+        await end_trip_in_sheet(full_name, org_name, start_dt, end_dt, duration)
     except Exception as e:
         print(f"[trip][ERROR] end_trip_in_sheet failed: {e}")
 
