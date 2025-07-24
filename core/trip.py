@@ -9,8 +9,8 @@ from utils.database import (
     is_registered,
     save_trip_start,
     get_now,
-    end_trip_local,
-    fetch_last_completed,
+    get_debug_mode,
+    adjust_to_work_hours,
 )
 from core.sheets import add_trip, end_trip_in_sheet
 
@@ -71,25 +71,31 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
             "✏️ Введите название организации вручную:"
         )
 
-    org_name = ORGANIZATIONS[org_id]
+    org_name = ORGANIZATIONS.get(org_id, org_id)
+
+    # Сохраняем старт в БД (он внутри себя скорректирует время, если DEBUG_MODE=False)
     if not save_trip_start(user_id, org_id, org_name):
         return await query.edit_message_text(
-            "❌ У вас уже есть незавершённая поездка или вне рабочего времени."
+            "❌ У вас уже есть незавершённая поездка или вы вне рабочего времени."
         )
 
-    now = get_now()
-    time_str = now.strftime("%H:%M")
+    # получаем «сырое» время
+    raw_now = get_now()
+    # корректируем под рабочие часы (если DEBUG_MODE=False)
+    debug = get_debug_mode()
+    start_dt = raw_now if debug else adjust_to_work_hours(raw_now)
+    time_str = start_dt.strftime("%H:%M")
 
-    # Получаем ФИО
+    # Извлекаем ФИО
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
     ).fetchone()[0]
     conn.close()
 
-    # Запись старта в Google Sheets
+    # Запись старта в Google Sheets с тем же временем, что и в БД
     try:
-        add_trip(full_name, org_name, now)
+        add_trip(full_name, org_name, start_dt)
     except Exception as e:
         print(f"[trip][ERROR] add_trip failed: {e}")
 
@@ -100,19 +106,21 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
     if not context.user_data.get("awaiting_custom_org"):
         return
-    user_id = update.message.from_user.id
     context.user_data.pop("awaiting_custom_org", None)
     org_name = update.message.text.strip()
 
     if not save_trip_start(user_id, "other", org_name):
         return await update.message.reply_text(
-            "❌ У вас уже есть незавершённая поездка или вне рабочего времени."
+            "❌ У вас уже есть незавершённая поездка или вы вне рабочего времени."
         )
 
-    now = get_now()
-    time_str = now.strftime("%H:%M")
+    raw_now = get_now()
+    debug = get_debug_mode()
+    start_dt = raw_now if debug else adjust_to_work_hours(raw_now)
+    time_str = start_dt.strftime("%H:%M")
 
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
@@ -121,7 +129,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     conn.close()
 
     try:
-        add_trip(full_name, org_name, now)
+        add_trip(full_name, org_name, start_dt)
     except Exception as e:
         print(f"[trip][ERROR] add_trip(custom org) failed: {e}")
 
@@ -132,7 +140,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Поддержка callback_query и текстовых сообщений
+    # поддержка callback и обычного сообщения
     if update.callback_query:
         query = update.callback_query
         await query.answer()
@@ -140,25 +148,26 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         responder, user_id = update.message, update.message.from_user.id
 
-    # Завершаем локально и получаем время
+    # закрываем поездку в БД
+    from utils.database import end_trip_local, fetch_last_completed
     success, end_dt = end_trip_local(user_id)
     if not success:
         return await responder.reply_text("⚠️ У вас нет активной поездки.")
 
-    # Берём последнюю только что закрытую поездку
+    # берём org_name и start_dt из только что закрытой записи
     org_name, start_dt = fetch_last_completed(user_id)
 
-    # Снова берём full_name для отправки в Google Sheets
+    # ФИО снова из БД
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
     ).fetchone()[0]
     conn.close()
 
-    # Вычисляем длительность
+    # длительность
     duration = end_dt - start_dt
 
-    # Запись конца в Google Sheets
+    # и пишем окончание в Google Sheets
     try:
         await end_trip_in_sheet(full_name, org_name, start_dt, end_dt, duration)
     except Exception as e:
