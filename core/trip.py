@@ -78,7 +78,7 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     now      = get_now()
     time_str = now.strftime("%H:%M")
 
-    # Получаем ФИО из БД
+    # Получаем ФИО
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
@@ -140,25 +140,26 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target  = update.message
         user_id = update.message.from_user.id
 
-    # Сначала локально закрываем поездку
+    # Локальное завершение
     ok, end_dt = end_trip_local(user_id)
     if not ok:
         return await target.reply_text("⚠️ У вас нет активной поездки.")
 
-    # Получаем информацию о только что закрытой поездке
+    # Получаем последнюю закрытую поездку
     org_name, start_dt = fetch_last_completed(user_id)
     duration = end_dt - start_dt
     time_str = end_dt.strftime("%H:%M")
 
-    # Попытка записать в Google Sheets
+    # ФИО для Google Sheets
+    conn = sqlite3.connect("court_tracking.db")
+    full_name = conn.execute(
+        "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
+    ).fetchone()[0]
+    conn.close()
+
+    # Запись завершения в Google Sheets
     try:
-        await end_trip_in_sheet(full_name := 
-            conn := sqlite3.connect("court_tracking.db") or None,  # dummy to silence linters
-            org_name,
-            start_dt,
-            end_dt,
-            duration
-        )
+        await end_trip_in_sheet(full_name, org_name, start_dt, end_dt, duration)
     except Exception as e:
         print(f"[trip][ERROR] end_trip_in_sheet failed: {e}")
 
