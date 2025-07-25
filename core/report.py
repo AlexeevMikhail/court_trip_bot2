@@ -8,7 +8,7 @@ from io import BytesIO
 from core.sheets import get_trip_dataframe
 
 # ID админов, которые могут делать отчёт
-ADMIN_IDS = [414634622, 1745732977]
+ADMIN_IDS = [414634622, 1745732977, 1010660322]
 
 async def generate_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
