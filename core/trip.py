@@ -1,17 +1,14 @@
+# core/trip.py
+
 import sqlite3
 from datetime import datetime
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
-from utils.database import (
-    is_registered,
-    save_trip_start,
-    get_now,
-    end_trip_local,
-    fetch_last_completed
-)
+from utils.database import is_registered, save_trip_start, get_now
 from core.sheets import add_trip, end_trip_in_sheet
 
+# Список организаций
 ORGANIZATIONS = {
     'kuzminsky':       "Кузьминский районный суд",
     'lefortovsky':     "Лефортовский районный суд",
@@ -44,6 +41,7 @@ async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text(
             "❌ Вы не зарегистрированы!\nОтправьте /register Иванов Иван"
         )
+
     keyboard = [
         [InlineKeyboardButton(name, callback_data=f"org_{org_id}")]
         for org_id, name in ORGANIZATIONS.items()
@@ -56,34 +54,38 @@ async def start_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query   = update.callback_query
+    query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    org_id  = query.data.split("_", 1)[1]
+    org_id = query.data.split("_", 1)[1]
 
     if org_id == "other":
         context.user_data["awaiting_custom_org"] = True
         return await query.edit_message_text("✏️ Введите название организации вручную:")
 
     org_name = ORGANIZATIONS.get(org_id, org_id)
-    dt = save_trip_start(user_id, org_id, org_name)
-    if not dt:
+
+    # пытаемся сохранить старт; вернётся True/False
+    success = save_trip_start(user_id, org_id, org_name)
+    if not success:
         return await query.edit_message_text(
-            "❌ У вас уже есть незавершённая поездка или вне рабочего времени."
+            "❌ У вас уже есть незавершённая поездка или вы вне рабочего времени."
         )
 
-    time_str = dt.strftime("%H:%M")
+    # т.к. старт сохранён, берём реальное время начала
+    now = get_now()
+    time_str = now.strftime("%H:%M")
 
-    # ФИО
+    # получаем ФИО
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
         "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
     ).fetchone()[0]
     conn.close()
 
-    # Google Sheets
+    # пишем в Google Sheets
     try:
-        add_trip(full_name, org_name, dt)
+        add_trip(full_name, org_name, now)
     except Exception as e:
         print(f"[trip][ERROR] add_trip failed: {e}")
 
@@ -100,13 +102,14 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     context.user_data.pop("awaiting_custom_org", None)
     org_name = update.message.text.strip()
 
-    dt = save_trip_start(user_id, "other", org_name)
-    if not dt:
+    success = save_trip_start(user_id, "other", org_name)
+    if not success:
         return await update.message.reply_text(
-            "❌ У вас уже есть незавершённая поездка или вне рабочего времени."
+            "❌ У вас уже есть незавершённая поездка или вы вне рабочего времени."
         )
 
-    time_str = dt.strftime("%H:%M")
+    now = get_now()
+    time_str = now.strftime("%H:%M")
 
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
@@ -115,7 +118,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     conn.close()
 
     try:
-        add_trip(full_name, org_name, dt)
+        add_trip(full_name, org_name, now)
     except Exception as e:
         print(f"[trip][ERROR] add_trip(custom) failed: {e}")
 
@@ -126,34 +129,62 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # поддержка как callback_query, так и текстового сообщения
     if update.callback_query:
-        query   = update.callback_query
+        query = update.callback_query
         await query.answer()
-        target  = query
+        target = query
         user_id = query.from_user.id
     else:
-        target  = update.message
+        target = update.message
         user_id = update.message.from_user.id
 
-    ok, end_dt = end_trip_local(user_id)
-    if not ok:
-        return await target.reply_text("⚠️ У вас нет активной поездки.")
-
-    org_name, start_dt = fetch_last_completed(user_id)
-    duration = end_dt - start_dt
-    time_str = end_dt.strftime("%H:%M")
+    now = get_now()
 
     conn = sqlite3.connect("court_tracking.db")
-    full_name = conn.execute(
-        "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
-    ).fetchone()[0]
+    cur = conn.cursor()
+
+    # закрываем in_progress
+    cur.execute(
+        "UPDATE trips SET end_datetime = ?, status = 'completed' "
+        "WHERE user_id = ? AND status = 'in_progress'",
+        (now, user_id)
+    )
+    if cur.rowcount == 0:
+        conn.commit()
+        conn.close()
+        return await target.reply_text("⚠️ У вас нет активной поездки.")
+    conn.commit()
+
+    # достаём последнюю завершённую
+    cur.execute(
+        "SELECT organization_name, start_datetime "
+        "FROM trips WHERE user_id = ? AND status = 'completed' "
+        "ORDER BY start_datetime DESC LIMIT 1",
+        (user_id,)
+    )
+    org_name, start_dt = cur.fetchone()
     conn.close()
 
+    # парсим строку в datetime, если нужно
+    if isinstance(start_dt, str):
+        try:
+            start_dt = datetime.fromisoformat(start_dt)
+        except ValueError:
+            start_dt = datetime.strptime(start_dt, "%Y-%m-%d %H:%M:%S")
+
+    # вычисляем длительность
+    duration = now - start_dt
+
+    # дополняем Google Sheets
     try:
-        await end_trip_in_sheet(full_name, org_name, start_dt, end_dt, duration)
+        end_trip_in_sheet(
+            full_name, org_name, start_dt, now, duration
+        )
     except Exception as e:
         print(f"[trip][ERROR] end_trip_in_sheet failed: {e}")
 
+    time_str = now.strftime("%H:%M")
     await target.reply_text(
         f"🏁 Поездка в *{org_name}* завершена в *{time_str}*",
         parse_mode="Markdown"
