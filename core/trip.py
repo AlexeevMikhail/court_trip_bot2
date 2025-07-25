@@ -178,7 +178,7 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # записываем в Google Sheets
     try:
-        await end_trip_in_sheet(full_name, org_name, start_dt, now, duration)
+        end_trip_in_sheet(full_name, org_name, start_dt, now, duration)
     except Exception as e:
         print(f"[trip][ERROR] end_trip_in_sheet failed: {e}")
 
