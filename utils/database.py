@@ -58,7 +58,7 @@ def get_debug_mode() -> bool:
     """
     True = тестовый режим (любой час),
     False = рабочий (09–18, в пт 09–16:45).
-    Сначала проверяем переменную окружения, потом — config.
+    Сначала — DEBUG_MODE из .env, потом — из config.
     """
     env = os.getenv("DEBUG_MODE")
     if env is not None:
@@ -99,7 +99,7 @@ def adjust_to_work_hours(dt: datetime) -> datetime | None:
 def save_trip_start(user_id: int, org_id: str, org_name: str) -> datetime | None:
     """
     Сохраняет новую поездку.
-    В тестовом режиме — сохраняем сейчас.
+    В тестовом режиме — сохраняем raw‑now.
     В рабочем — сначала корректируем время, возвращаем его.
     """
     raw = get_now()
@@ -168,34 +168,83 @@ def fetch_last_completed(user_id: int) -> tuple[str, datetime]:
         try:
             st = datetime.fromisoformat(st)
         except:
-            st = datetime.strptime(st, "%Y-%m-%d %H:%M:%S")
+            from datetime import datetime as _d
+            st = _d.strptime(st, "%Y-%m-%d %H:%M:%S")
     return org, st
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ↓↓↓ Здесь только расширенная логика автозакрытия ↓↓↓
+# ──────────────────────────────────────────────────────────────────────────────
+
+from core.sheets import end_trip_in_sheet  # импорт Google‑Sheets‑апдейта
 
 def close_expired_trips():
     """
     Авто‑закрытие поездок (Job из scheduler.py).
+    Для каждой in_progress:
+      — доводим end_datetime/статус в БД,
+      — а потом сразу пушим в Google‑Sheets.
     """
     now   = get_now()
     debug = get_debug_mode()
     conn  = sqlite3.connect(DB_PATH)
     cur   = conn.cursor()
-    cur.execute("SELECT id, start_datetime FROM trips WHERE status = 'in_progress'")
+
+    # забираем все незавершённые
+    cur.execute(
+        "SELECT id, user_id, organization_name, start_datetime "
+        "FROM trips WHERE status = 'in_progress'"
+    )
     rows = cur.fetchall()
-    cnt = 0
-    for trip_id, start_str in rows:
-        sd = datetime.fromisoformat(start_str)
+
+    closed = []
+    for trip_id, user_id, org_name, start_str in rows:
+        # парсим начало
+        start_dt = datetime.fromisoformat(start_str)
+        # вычисляем конец
         if not debug:
-            wd = sd.weekday()
-            end = WORKDAY_END_FRIDAY if wd == 4 else WORKDAY_END_WEEK
-            boundary = datetime.combine(sd.date(), end)
-            end_dt = boundary if now >= boundary else now
+            wd = start_dt.weekday()
+            end_t = WORKDAY_END_FRIDAY if wd == 4 else WORKDAY_END_WEEK
+            bound = datetime.combine(start_dt.date(), end_t)
+            end_dt = bound if now >= bound else now
         else:
             end_dt = now
+
+        # обновляем БД
         cur.execute(
             "UPDATE trips SET end_datetime = ?, status = 'completed' WHERE id = ?",
             (end_dt, trip_id)
         )
-        cnt += 1
+        if cur.rowcount:
+            closed.append((user_id, org_name, start_dt, end_dt))
+
     conn.commit()
     conn.close()
-    print(f"[db ] [{now.strftime('%Y-%m-%d %H:%M')}] Авто‑закрыто {cnt} поездок.")
+
+    # пушим в Google Sheets
+    for user_id, org_name, start_dt, end_dt in closed:
+        # достаём ФИО
+        conn = sqlite3.connect(DB_PATH)
+        full_name = conn.execute(
+            "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
+        ).fetchone()[0]
+        conn.close()
+
+        duration = end_dt - start_dt
+        try:
+            # если вы используете AsyncIOScheduler,
+            # end_trip_in_sheet — async, поэтому создаём таску
+            import asyncio
+            asyncio.get_event_loop().create_task(
+                end_trip_in_sheet(full_name, org_name, start_dt, end_dt, duration)
+            )
+        except RuntimeError:
+            # если loop не запущен, вызовем синхронно
+            import threading
+            threading.Thread(
+                target=lambda: asyncio.run(end_trip_in_sheet(
+                    full_name, org_name, start_dt, end_dt, duration
+                ))
+            ).start()
+
+    print(f"[db ] [{now.strftime('%Y-%m-%d %H:%M')}] Авто‑закрыто {len(closed)} поездок.")
