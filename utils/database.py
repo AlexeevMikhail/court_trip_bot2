@@ -1,13 +1,12 @@
 import sqlite3
-from datetime import datetime, date, time, timedelta
 import os
+from datetime import datetime, date, time, timedelta
 from dotenv import load_dotenv
+from core.sheets import end_trip_in_sheet  # <-- теперь доступна синхронно
 
 load_dotenv()
 
 DB_PATH = 'court_tracking.db'
-
-# рабочие часы
 WORKDAY_START      = time(9, 0)
 WORKDAY_END_WEEK   = time(18, 0)
 WORKDAY_END_FRIDAY = time(16, 45)
@@ -55,11 +54,6 @@ def get_now() -> datetime:
     return datetime.now().replace(second=0, microsecond=0)
 
 def get_debug_mode() -> bool:
-    """
-    True = тестовый режим (любой час),
-    False = рабочий (09–18, в пт 09–16:45).
-    Сначала — DEBUG_MODE из .env, потом — из config.
-    """
     env = os.getenv("DEBUG_MODE")
     if env is not None:
         return env.lower() in ("1", "true", "yes")
@@ -79,12 +73,6 @@ def is_registered(user_id: int) -> bool:
     return ok
 
 def adjust_to_work_hours(dt: datetime) -> datetime | None:
-    """
-    Если не в тестовом режиме:
-      - до 09:00 → ставим 09:00
-      - после 18:00 (16:45 в пт) → запрещаем (None)
-      - сб/вс → запрещаем (None)
-    """
     wd = dt.weekday()  # 0–4 = Пн–Пт
     if wd >= 5:
         return None
@@ -96,32 +84,23 @@ def adjust_to_work_hours(dt: datetime) -> datetime | None:
         return dt
     return None
 
-def save_trip_start(user_id: int, org_id: str, org_name: str) -> datetime | None:
-    """
-    Сохраняет новую поездку.
-    В тестовом режиме — сохраняем raw‑now.
-    В рабочем — сначала корректируем время, возвращаем его.
-    """
+def save_trip_start(user_id: int, org_id: str, org_name: str) -> bool:
     raw = get_now()
     debug = get_debug_mode()
-    if not debug:
-        adj = adjust_to_work_hours(raw)
-        if not adj:
-            return None
-        now = adj
-    else:
-        now = raw
+    now = raw if debug else adjust_to_work_hours(raw)
+    if not now:
+        return False
 
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
-    # нет ли уже незавершённой?
+    # нет ли уже in_progress
     cur.execute(
         "SELECT 1 FROM trips WHERE user_id = ? AND status = 'in_progress'",
         (user_id,)
     )
     if cur.fetchone():
         conn.close()
-        return None
+        return False
 
     cur.execute('''
         INSERT INTO trips
@@ -130,13 +109,9 @@ def save_trip_start(user_id: int, org_id: str, org_name: str) -> datetime | None
     ''', (user_id, org_id, org_name, now))
     conn.commit()
     conn.close()
-    return now
+    return True
 
-def end_trip_local(user_id: int) -> tuple[bool, datetime | None]:
-    """
-    Завершает in_progress поездку в БД.
-    Возвращает (успех, время завершения).
-    """
+def end_trip_local(user_id: int) -> tuple[bool, datetime|None]:
     now = get_now()
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
@@ -151,9 +126,6 @@ def end_trip_local(user_id: int) -> tuple[bool, datetime | None]:
     return ok, (now if ok else None)
 
 def fetch_last_completed(user_id: int) -> tuple[str, datetime]:
-    """
-    Берёт последнюю только что закрытую поездку (org_name, start_dt).
-    """
     conn = sqlite3.connect(DB_PATH)
     cur  = conn.cursor()
     cur.execute('''
@@ -162,51 +134,48 @@ def fetch_last_completed(user_id: int) -> tuple[str, datetime]:
         WHERE user_id = ? AND status = 'completed'
         ORDER BY start_datetime DESC LIMIT 1
     ''', (user_id,))
-    org, st = cur.fetchone()
+    org_name, start_dt = cur.fetchone()
     conn.close()
-    if isinstance(st, str):
+    if isinstance(start_dt, str):
         try:
-            st = datetime.fromisoformat(st)
+            start_dt = datetime.fromisoformat(start_dt)
         except:
-            from datetime import datetime as _d
-            st = _d.strptime(st, "%Y-%m-%d %H:%M:%S")
-    return org, st
-
-# ──────────────────────────────────────────────────────────────────────────────
-# ↓↓↓ Здесь только расширенная логика автозакрытия ↓↓↓
-# ──────────────────────────────────────────────────────────────────────────────
-
-from core.sheets import end_trip_in_sheet  # импорт Google‑Sheets‑апдейта
+            start_dt = datetime.strptime(start_dt, "%Y-%m-%d %H:%M:%S")
+    return org_name, start_dt
 
 def close_expired_trips():
     """
-    Авто‑закрытие поездок (Job из scheduler.py).
-    Для каждой in_progress:
-      — доводим end_datetime/статус в БД,
-      — а потом сразу пушим в Google‑Sheets.
+    Авто‑закрытие по расписанию — доводим in_progress
+    до границы рабочего дня (или до now, если в DEBUG).
+    После этого сразу дополняем строку в Google Sheets.
     """
     now   = get_now()
     debug = get_debug_mode()
     conn  = sqlite3.connect(DB_PATH)
     cur   = conn.cursor()
 
-    # забираем все незавершённые
-    cur.execute(
-        "SELECT id, user_id, organization_name, start_datetime "
-        "FROM trips WHERE status = 'in_progress'"
-    )
+    # теперь сразу берём user_id и org_name вместе с id
+    cur.execute("""
+        SELECT id, user_id, organization_name, start_datetime
+        FROM trips
+        WHERE status = 'in_progress'
+    """)
     rows = cur.fetchall()
+    cnt = 0
 
-    closed = []
     for trip_id, user_id, org_name, start_str in rows:
-        # парсим начало
-        start_dt = datetime.fromisoformat(start_str)
+        # парсим время старта
+        try:
+            sd = datetime.fromisoformat(start_str)
+        except ValueError:
+            sd = datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
+
         # вычисляем конец
         if not debug:
-            wd = start_dt.weekday()
-            end_t = WORKDAY_END_FRIDAY if wd == 4 else WORKDAY_END_WEEK
-            bound = datetime.combine(start_dt.date(), end_t)
-            end_dt = bound if now >= bound else now
+            wd   = sd.weekday()
+            endt = WORKDAY_END_FRIDAY if wd == 4 else WORKDAY_END_WEEK
+            boundary = datetime.combine(sd.date(), endt)
+            end_dt = boundary if now >= boundary else now
         else:
             end_dt = now
 
@@ -215,36 +184,25 @@ def close_expired_trips():
             "UPDATE trips SET end_datetime = ?, status = 'completed' WHERE id = ?",
             (end_dt, trip_id)
         )
-        if cur.rowcount:
-            closed.append((user_id, org_name, start_dt, end_dt))
+        if cur.rowcount > 0:
+            # достаём ФИО
+            user_cur = conn.cursor()
+            user_cur.execute(
+                "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
+            )
+            full_name = user_cur.fetchone()[0]
+
+            # длительность
+            duration = end_dt - sd
+
+            # дополняем Google Sheets
+            try:
+                end_trip_in_sheet(full_name, org_name, sd, end_dt, duration)
+            except Exception as e:
+                print(f"[db][ERROR] end_trip_in_sheet failed for trip {trip_id}: {e}")
+
+            cnt += 1
 
     conn.commit()
     conn.close()
-
-    # пушим в Google Sheets
-    for user_id, org_name, start_dt, end_dt in closed:
-        # достаём ФИО
-        conn = sqlite3.connect(DB_PATH)
-        full_name = conn.execute(
-            "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
-        ).fetchone()[0]
-        conn.close()
-
-        duration = end_dt - start_dt
-        try:
-            # если вы используете AsyncIOScheduler,
-            # end_trip_in_sheet — async, поэтому создаём таску
-            import asyncio
-            asyncio.get_event_loop().create_task(
-                end_trip_in_sheet(full_name, org_name, start_dt, end_dt, duration)
-            )
-        except RuntimeError:
-            # если loop не запущен, вызовем синхронно
-            import threading
-            threading.Thread(
-                target=lambda: asyncio.run(end_trip_in_sheet(
-                    full_name, org_name, start_dt, end_dt, duration
-                ))
-            ).start()
-
-    print(f"[db ] [{now.strftime('%Y-%m-%d %H:%M')}] Авто‑закрыто {len(closed)} поездок.")
+    print(f"[db ] [{now.strftime('%Y-%m-%d %H:%M')}] Авто‑закрыто {cnt} поездок.")
