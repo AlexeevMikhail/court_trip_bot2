@@ -1,26 +1,21 @@
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-import pytz
-from utils.database import close_expired_trips_and_log
-
-MOSCOW_TZ = pytz.timezone("Europe/Moscow")
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from utils.database import close_expired_trips
 
 def start_scheduler():
-    scheduler = BackgroundScheduler(timezone=MOSCOW_TZ)
-
+    scheduler = AsyncIOScheduler(timezone="Europe/Paris")
+    # Пн–Чт в 18:00
     scheduler.add_job(
-        close_expired_trips_and_log,
-        trigger=CronTrigger(day_of_week='mon-thu', hour=18, minute=0, timezone=MOSCOW_TZ),
-        id='close_trips_mon_thu', replace_existing=True
+        close_expired_trips,
+        trigger="cron",
+        day_of_week="mon-thu",
+        hour=18, minute=0
     )
-    print("📆 Задача автозавершения Пн–Чт в 18:00 добавлена.")
-
+    # Пт 16:45
     scheduler.add_job(
-        close_expired_trips_and_log,
-        trigger=CronTrigger(day_of_week='fri', hour=16, minute=45, timezone=MOSCOW_TZ),
-        id='close_trips_fri', replace_existing=True
+        close_expired_trips,
+        trigger="cron",
+        day_of_week="fri",
+        hour=16, minute=45
     )
-    print("📆 Задача автозавершения Пт в 16:45 добавлена.")
-
     scheduler.start()
-    print("✅ Планировщик запущён.")
+    print("✅ Планировщик успешно запущен.")
