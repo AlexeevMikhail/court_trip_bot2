@@ -5,7 +5,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
-from utils.database import is_registered, save_trip_start, get_now
+from utils.database import is_registered, save_trip_start, get_now, get_debug_mode, adjust_to_work_hours
 from core.sheets import add_trip, end_trip_in_sheet
 
 # Список организаций
@@ -70,8 +70,10 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
             "❌ У вас уже есть незавершённая поездка или вы вне рабочего времени."
         )
 
-    now = get_now()
-    time_str = now.strftime("%H:%M")
+    # Берём текущий момент и корректируем до 09:00, если нужно
+    raw = get_now()
+    start_dt = raw if get_debug_mode() else adjust_to_work_hours(raw)
+    time_str = start_dt.strftime("%H:%M")
 
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
@@ -80,7 +82,7 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     conn.close()
 
     try:
-        await add_trip(full_name, org_name, now)  # если add_trip стал async, иначе без await
+        await add_trip(full_name, org_name, start_dt)
     except:
         # если add_trip – sync, то используем просто add_trip(...)
         pass
@@ -104,8 +106,10 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
             "❌ У вас уже есть незавершённая поездка или вы вне рабочего времени."
         )
 
-    now = get_now()
-    time_str = now.strftime("%H:%M")
+    # Берём текущий момент и корректируем до 09:00, если нужно
+    raw = get_now()
+    start_dt = raw if get_debug_mode() else adjust_to_work_hours(raw)
+    time_str = start_dt.strftime("%H:%M")
 
     conn = sqlite3.connect("court_tracking.db")
     full_name = conn.execute(
@@ -114,7 +118,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
     conn.close()
 
     try:
-        await add_trip(full_name, org_name, now)
+        await add_trip(full_name, org_name, start_dt)
     except:
         pass
 
