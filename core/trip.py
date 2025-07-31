@@ -84,7 +84,6 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         await add_trip(full_name, org_name, start_dt)
     except:
-        # если add_trip – sync, то используем просто add_trip(...)
         pass
 
     await query.edit_message_text(
@@ -182,7 +181,7 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # записываем в Google Sheets
     try:
-        end_trip_in_sheet(full_name, org_name, start_dt, now, duration)
+        await end_trip_in_sheet(full_name, org_name, start_dt, now, duration)
     except Exception as e:
         print(f"[trip][ERROR] end_trip_in_sheet failed: {e}")
 
