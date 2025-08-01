@@ -7,16 +7,12 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
 from utils.database import (
-    is_registered,
-    save_trip_start,
-    get_now,
-    get_debug_mode,
-    adjust_to_work_hours,
+    is_registered, save_trip_start,
+    get_now, get_debug_mode, adjust_to_work_hours,
 )
 from core.sheets import add_trip, end_trip_in_sheet
 
 logger = logging.getLogger(__name__)
-
 
 # Список организаций
 ORGANIZATIONS = {
@@ -97,9 +93,10 @@ async def handle_org_selection(update: Update, context: ContextTypes.DEFAULT_TYP
     ).fetchone()[0]
     conn.close()
 
+    # Вызов синхронной функции без await
     try:
         logger.info("Calling add_trip for %s to %s at %s", full_name, org_name, start_dt)
-        await add_trip(full_name, org_name, start_dt)
+        add_trip(full_name, org_name, start_dt)
         logger.info("add_trip succeeded")
     except Exception as e:
         logger.error("add_trip failed: %s", e)
@@ -139,7 +136,7 @@ async def handle_custom_org_input(update: Update, context: ContextTypes.DEFAULT_
 
     try:
         logger.info("Calling add_trip for %s to %s at %s", full_name, org_name, start_dt)
-        await add_trip(full_name, org_name, start_dt)
+        add_trip(full_name, org_name, start_dt)
         logger.info("add_trip succeeded for custom org")
     except Exception as e:
         logger.error("add_trip failed for custom org: %s", e)
@@ -197,7 +194,14 @@ async def end_trip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     duration = now - start_dt
     logger.info("Calculated duration: %s", duration)
 
-    # Запись в Google Sheets с await
+    # Снова достаём full_name для Sheets
+    conn = sqlite3.connect("court_tracking.db")
+    full_name = conn.execute(
+        "SELECT full_name FROM employees WHERE user_id = ?", (user_id,)
+    ).fetchone()[0]
+    conn.close()
+
+    # Запись в Google Sheets
     try:
         logger.info(
             "Calling end_trip_in_sheet for %s, org %s, start %s, end %s, duration %s",
