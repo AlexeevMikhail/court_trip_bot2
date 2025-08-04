@@ -49,35 +49,27 @@ def end_trip_in_sheet(
     duration:   timedelta
 ):
     """
-    Находит последнюю незавершённую поездку и дополняет её:
+    Находит первую незавершённую поездку пользователя и дополняет её:
       E: время окончания, F: продолжительность
     """
     sheet = _open_sheet("Поездки")
     records = sheet.get_all_records()
-    date_str  = start_dt.strftime("%d.%m.%Y")
-    start_str = start_dt.strftime("%H:%M")
+    end_str = end_dt.strftime("%H:%M")
+    secs = int(duration.total_seconds())
+    h, rem = divmod(secs, 3600)
+    m, s   = divmod(rem, 60)
+    dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
 
     for idx, row in enumerate(records, start=2):
-        if (row.get("ФИО") == full_name
-            and row.get("Организация") == org_name
-            and row.get("Дата") == date_str
-            and row.get("Начало поездки") == start_str
-            and not row.get("Конец поездки")):
-
-            end_str = end_dt.strftime("%H:%M")
-            secs = int(duration.total_seconds())
-            h, rem = divmod(secs, 3600)
-            m, s   = divmod(rem, 60)
-            dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
-
+        # Только по ФИО и при пустом столбце "Конец поездки"
+        if row.get("ФИО") == full_name and not row.get("Конец поездки"):
             sheet.update_cell(idx, 5, end_str)
             sheet.update_cell(idx, 6, dur_str)
             print(f"[sheets] end_trip_in_sheet: updated row {idx} → end={end_str}, dur={dur_str}")
             return
 
-    print(f"[sheets] WARN: Не найдена открытая поездка для "
-          f"{full_name}, {org_name} ({date_str} {start_str})")
-
+    print(f"[sheets] WARN: Не найдена открытая поездка для {full_name}")
+    
 def add_plan(full_name: str, org_name: str, plan_date: datetime.date, plan_time: str):
     sheet = _open_sheet("Календарь")
     date_str = plan_date.strftime("%d.%m.%Y")
