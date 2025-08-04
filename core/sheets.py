@@ -6,14 +6,12 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-# Подгружаем .env
 load_dotenv()
 GOOGLE_SHEETS_JSON = os.getenv("GOOGLE_SHEETS_JSON")
 SPREADSHEET_ID     = os.getenv("SPREADSHEET_ID")
 if not GOOGLE_SHEETS_JSON or not SPREADSHEET_ID:
     raise ValueError("Не заданы GOOGLE_SHEETS_JSON или SPREADSHEET_ID в .env")
 
-# Авторизация в Google Sheets
 creds_dict = json.loads(GOOGLE_SHEETS_JSON)
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -26,13 +24,6 @@ def _open_sheet(name: str = None):
     ss = client.open_by_key(SPREADSHEET_ID)
     return ss.worksheet(name) if name else ss.sheet1
 
-def add_user(full_name: str, user_id: int):
-    try:
-        sheet = _open_sheet("Пользователи")
-    except gspread.exceptions.WorksheetNotFound:
-        sheet = _open_sheet()
-    sheet.append_row([full_name, str(user_id)], value_input_option="USER_ENTERED")
-
 def add_trip(full_name: str, org_name: str, start_dt: datetime):
     sheet = _open_sheet("Поездки")
     date_str  = start_dt.strftime("%d.%m.%Y")
@@ -41,19 +32,17 @@ def add_trip(full_name: str, org_name: str, start_dt: datetime):
                      value_input_option="USER_ENTERED")
     print(f"[sheets] add_trip: {full_name}, {org_name}, {date_str} {time_str}")
 
-def end_trip_in_sheet(
-    full_name: str,
-    org_name:   str,
-    start_dt:   datetime,
-    end_dt:     datetime,
-    duration:   timedelta
-):
-    """
-    Находит первую незавершённую поездку пользователя и дополняет её:
-      E: время окончания, F: продолжительность
-    """
+def end_trip_in_sheet(full_name: str, org_name: str, start_dt: datetime,
+                      end_dt: datetime, duration: timedelta):
     sheet = _open_sheet("Поездки")
+
+    # Выведем первую строку заголовка
+    headers = sheet.row_values(1)
+    print(f"[sheets][DEBUG] Headers: {headers}")
+
     records = sheet.get_all_records()
+    print(f"[sheets][DEBUG] Fetched {len(records)} records")
+
     end_str = end_dt.strftime("%H:%M")
     secs = int(duration.total_seconds())
     h, rem = divmod(secs, 3600)
@@ -61,15 +50,18 @@ def end_trip_in_sheet(
     dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
 
     for idx, row in enumerate(records, start=2):
-        # Только по ФИО и при пустом столбце "Конец поездки"
-        if row.get("ФИО") == full_name and not row.get("Конец поездки"):
+        print(f"[sheets][DEBUG] Row {idx}: {row}")
+        fio = row.get("ФИО")
+        end_cell = row.get("Конец поездки")
+        print(f"[sheets][DEBUG] -> ФИО='{fio}', Конец поездки='{end_cell}'")
+        if fio == full_name and not end_cell:
             sheet.update_cell(idx, 5, end_str)
             sheet.update_cell(idx, 6, dur_str)
             print(f"[sheets] end_trip_in_sheet: updated row {idx} → end={end_str}, dur={dur_str}")
             return
 
     print(f"[sheets] WARN: Не найдена открытая поездка для {full_name}")
-    
+
 def add_plan(full_name: str, org_name: str, plan_date: datetime.date, plan_time: str):
     sheet = _open_sheet("Календарь")
     date_str = plan_date.strftime("%d.%m.%Y")
