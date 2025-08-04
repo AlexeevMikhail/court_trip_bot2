@@ -2,6 +2,7 @@
 
 import os
 import time
+import logging  # добавлено для настройки логирования
 from dotenv import load_dotenv
 from telegram.ext import (
     ApplicationBuilder,
@@ -27,7 +28,15 @@ from scheduler import start_scheduler
 
 load_dotenv()
 keep_alive()
+# даём время на установку соединений
 time.sleep(3)
+
+# Настройка логирования — чтобы INFO и выше шли в bot.log
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -50,19 +59,19 @@ def main():
 
     # Регистрация CommandHandler'ов
     app.add_handler(register_command)   # /register
-    app.add_handler(trip_command)       # /trip или команда для старта поездки
-    app.add_handler(return_command)     # /return или команда для завершения
+    app.add_handler(trip_command)       # /trip
+    app.add_handler(return_command)     # /return
     app.add_handler(report_command)     # /report
 
     # Роутинг по тексту из главного меню
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu))
 
-    # Обработчики inline‑кнопок
-    app.add_handler(organization_callback)   # выбор суда для поездки
+    # Обработчики inline-кнопок
+    app.add_handler(organization_callback)   # выбор суда
     app.add_handler(end_trip_callback)       # inline callback "end_trip"
     app.add_handler(plan_org_callback)       # inline callback "plan_org_*"
 
-    # Запускаем планировщик (если нужен)
+    # Запускаем планировщик
     start_scheduler()
 
     print("⏳ Запуск polling...")
