@@ -17,36 +17,50 @@ scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-creds  = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 
 def _open_sheet(name: str = None):
     ss = client.open_by_key(SPREADSHEET_ID)
     return ss.worksheet(name) if name else ss.sheet1
 
+def add_user(full_name: str, user_id: int):
+    try:
+        sheet = _open_sheet("Пользователи")
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = _open_sheet()
+    sheet.append_row([full_name, str(user_id)], value_input_option="USER_ENTERED")
+    print(f"[sheets] add_user: {full_name}, {user_id}")
+
 def add_trip(full_name: str, org_name: str, start_dt: datetime):
     sheet = _open_sheet("Поездки")
-    date_str  = start_dt.strftime("%d.%m.%Y")
-    time_str  = start_dt.strftime("%H:%M")
-    sheet.append_row([full_name, org_name, date_str, time_str, "", ""],
-                     value_input_option="USER_ENTERED")
+    date_str = start_dt.strftime("%d.%m.%Y")
+    time_str = start_dt.strftime("%H:%M")
+    sheet.append_row(
+        [full_name, org_name, date_str, time_str, "", ""],
+        value_input_option="USER_ENTERED"
+    )
     print(f"[sheets] add_trip: {full_name}, {org_name}, {date_str} {time_str}")
 
-def end_trip_in_sheet(full_name: str, org_name: str, start_dt: datetime,
-                      end_dt: datetime, duration: timedelta):
+def end_trip_in_sheet(
+    full_name: str,
+    org_name:   str,
+    start_dt:   datetime,
+    end_dt:     datetime,
+    duration:   timedelta
+):
     sheet = _open_sheet("Поездки")
 
-    # Выведем первую строку заголовка
+    # Логируем заголовки и количество записей
     headers = sheet.row_values(1)
     print(f"[sheets][DEBUG] Headers: {headers}")
-
     records = sheet.get_all_records()
     print(f"[sheets][DEBUG] Fetched {len(records)} records")
 
     end_str = end_dt.strftime("%H:%M")
     secs = int(duration.total_seconds())
     h, rem = divmod(secs, 3600)
-    m, s   = divmod(rem, 60)
+    m, s = divmod(rem, 60)
     dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
 
     for idx, row in enumerate(records, start=2):
@@ -74,7 +88,10 @@ def add_plan(full_name: str, org_name: str, plan_date: datetime.date, plan_time:
         if cell_date > plan_date:
             sheet.insert_row([date_str, full_name, org_name, plan_time], idx)
             return
-    sheet.append_row([date_str, full_name, org_name, plan_time], value_input_option="USER_ENTERED")
+    sheet.append_row(
+        [date_str, full_name, org_name, plan_time],
+        value_input_option="USER_ENTERED"
+    )
 
 def get_trip_dataframe() -> pd.DataFrame:
     sheet = _open_sheet("Поездки")
