@@ -38,8 +38,10 @@ def add_trip(full_name: str, org_name: str, start_dt: datetime):
     sheet = _open_sheet("Поездки")
     date_str  = start_dt.strftime("%d.%m.%Y")
     time_str  = start_dt.strftime("%H:%M")
-    sheet.append_row([full_name, org_name, date_str, time_str, "", ""],
-                     value_input_option="USER_ENTERED")
+    sheet.append_row(
+        [full_name, org_name, date_str, time_str, "", ""],
+        value_input_option="USER_ENTERED"
+    )
     print(f"[sheets] add_trip: {full_name}, {org_name}, {date_str} {time_str}")
 
 def end_trip_in_sheet(
@@ -54,10 +56,9 @@ def end_trip_in_sheet(
       E: время окончания, F: продолжительность
     """
     sheet = _open_sheet("Поездки")
-
-    # Считаем текущее число записей (без заголовка)
     records = sheet.get_all_records()
-    row_idx = len(records) + 1  # +1 потому что первая строка – заголовки
+    # Индекс последней строки (учитывая заголовок на 1-й строке)
+    row_idx = len(records) + 1
 
     end_str = end_dt.strftime("%H:%M")
     secs = int(duration.total_seconds())
@@ -81,7 +82,10 @@ def add_plan(full_name: str, org_name: str, plan_date: datetime.date, plan_time:
         if cell_date > plan_date:
             sheet.insert_row([date_str, full_name, org_name, plan_time], idx)
             return
-    sheet.append_row([date_str, full_name, org_name, plan_time], value_input_option="USER_ENTERED")
+    sheet.append_row(
+        [date_str, full_name, org_name, plan_time],
+        value_input_option="USER_ENTERED"
+    )
 
 def get_trip_dataframe() -> pd.DataFrame:
     sheet = _open_sheet("Поездки")
