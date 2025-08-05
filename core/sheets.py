@@ -67,15 +67,17 @@ def end_trip_in_sheet(
     m, s = divmod(rem, 60)
     dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
 
-    # Обход с конца, чтобы первым встретить самую свежую заявку
-    for offset, row in enumerate(reversed(records), start=2):
-        idx = len(records) + 1 - (offset - 1)
-        # Сравниваем ФИО, Организацию, Дату и пустой «Конец поездки»
-        if ( row.get("ФИО") == full_name
-             and row.get("Организация") == org_name
-             and row.get("Дата") == date_str
-             and not row.get("Конец поездки") ):
+    total = len(records)
 
+    # Перебираем с конца: rev_idx=0 для самой свежей записи
+    for rev_idx, row in enumerate(reversed(records)):
+        idx = total + 1 - rev_idx  # реальный номер строки в таблице
+        if (
+            row.get("ФИО") == full_name and
+            row.get("Организация") == org_name and
+            row.get("Дата") == date_str and
+            not row.get("Конец поездки")
+        ):
             sheet.update_cell(idx, 5, end_str)
             sheet.update_cell(idx, 6, dur_str)
             print(f"[sheets] end_trip_in_sheet: updated row {idx} → end={end_str}, dur={dur_str}")
