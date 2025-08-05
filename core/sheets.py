@@ -54,28 +54,34 @@ def end_trip_in_sheet(
     duration:   timedelta
 ):
     """
-    Находит последнюю незавершённую поездку данного пользователя
-    и дополняет её временем окончания (столбец E) и продолжительностью (столбец F).
+    Находит последнюю (по времени) незавершённую поездку этого пользователя
+    с тем же org и date, и дополняет её.
     """
     sheet = _open_sheet("Поездки")
-    records = sheet.get_all_records()  # список словарей по строкам, без заголовка
+    records = sheet.get_all_records()  # список словарей без заголовка
 
+    date_str = start_dt.strftime("%d.%m.%Y")
     end_str = end_dt.strftime("%H:%M")
     secs = int(duration.total_seconds())
     h, rem = divmod(secs, 3600)
-    m, s   = divmod(rem, 60)
+    m, s = divmod(rem, 60)
     dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
 
-    # Идём по записям с конца (самая последняя)
+    # Обход с конца, чтобы первым встретить самую свежую заявку
     for offset, row in enumerate(reversed(records), start=2):
-        idx = len(records) + 1 - (offset - 1)  # реальный номер строки в листе
-        if row.get("ФИО") == full_name and not row.get("Конец поездки"):
+        idx = len(records) + 1 - (offset - 1)
+        # Сравниваем ФИО, Организацию, Дату и пустой «Конец поездки»
+        if ( row.get("ФИО") == full_name
+             and row.get("Организация") == org_name
+             and row.get("Дата") == date_str
+             and not row.get("Конец поездки") ):
+
             sheet.update_cell(idx, 5, end_str)
             sheet.update_cell(idx, 6, dur_str)
             print(f"[sheets] end_trip_in_sheet: updated row {idx} → end={end_str}, dur={dur_str}")
             return
 
-    print(f"[sheets] WARN: Не найдена открытая поездка для {full_name}")
+    print(f"[sheets] WARN: Не найдена открытая поездка для {full_name} в {org_name} {date_str}")
 
 def add_plan(full_name: str, org_name: str, plan_date: datetime.date, plan_time: str):
     sheet = _open_sheet("Календарь")
