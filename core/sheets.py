@@ -1,3 +1,5 @@
+# core/sheets.py
+
 import os
 import json
 import gspread
@@ -19,7 +21,7 @@ scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-creds  = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 
 def _open_sheet(name: str = None):
@@ -36,8 +38,8 @@ def add_user(full_name: str, user_id: int):
 
 def add_trip(full_name: str, org_name: str, start_dt: datetime):
     sheet = _open_sheet("Поездки")
-    date_str  = start_dt.strftime("%d.%m.%Y")
-    time_str  = start_dt.strftime("%H:%M")
+    date_str = start_dt.strftime("%d.%m.%Y")
+    time_str = start_dt.strftime("%H:%M")
     sheet.append_row(
         [full_name, org_name, date_str, time_str, "", ""],
         value_input_option="USER_ENTERED"
@@ -52,13 +54,11 @@ def end_trip_in_sheet(
     duration:   timedelta
 ):
     """
-    Обновляет последнюю строку листа «Поездки»:
-      E: время окончания, F: продолжительность
+    Находит последнюю незавершённую поездку данного пользователя
+    и дополняет её временем окончания (столбец E) и продолжительностью (столбец F).
     """
     sheet = _open_sheet("Поездки")
-    records = sheet.get_all_records()
-    # Индекс последней строки (учитывая заголовок на 1-й строке)
-    row_idx = len(records) + 1
+    records = sheet.get_all_records()  # список словарей по строкам, без заголовка
 
     end_str = end_dt.strftime("%H:%M")
     secs = int(duration.total_seconds())
@@ -66,9 +66,16 @@ def end_trip_in_sheet(
     m, s   = divmod(rem, 60)
     dur_str = f"{h}:{m:02d}" + (f":{s:02d}" if s else "")
 
-    sheet.update_cell(row_idx, 5, end_str)
-    sheet.update_cell(row_idx, 6, dur_str)
-    print(f"[sheets] end_trip_in_sheet: updated row {row_idx} → end={end_str}, dur={dur_str}")
+    # Идём по записям с конца (самая последняя)
+    for offset, row in enumerate(reversed(records), start=2):
+        idx = len(records) + 1 - (offset - 1)  # реальный номер строки в листе
+        if row.get("ФИО") == full_name and not row.get("Конец поездки"):
+            sheet.update_cell(idx, 5, end_str)
+            sheet.update_cell(idx, 6, dur_str)
+            print(f"[sheets] end_trip_in_sheet: updated row {idx} → end={end_str}, dur={dur_str}")
+            return
+
+    print(f"[sheets] WARN: Не найдена открытая поездка для {full_name}")
 
 def add_plan(full_name: str, org_name: str, plan_date: datetime.date, plan_time: str):
     sheet = _open_sheet("Календарь")
